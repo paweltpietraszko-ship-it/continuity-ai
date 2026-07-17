@@ -92,3 +92,16 @@
 - Tests: C:\Users\p_pie\.local\bin\uv.exe run pytest tests/test_ingestion.py -v completed with 40 passed.
 - Tests: C:\Users\p_pie\.local\bin\uv.exe run pytest tests/test_acceptance_project_promise.py -v produced 1 failed only with ReasoningPipelineNotImplementedError; src/continuity_ai/reasoning.py and tests/test_acceptance_project_promise.py were not modified.
 - Gate status: Gate G-02 hardening implemented and locally verified; not declared passed until the updated pull request is reviewed, merged, and re-verified from GitHub-persisted history.
+
+## 2026-07-17 Gate G-02 Post-Merge Closure
+
+- Audit: full Cursor audit of Gate G-02 returned PASS WITH NON-BLOCKING FINDINGS; delta audit after coordinator-required hardening also returned PASS WITH NON-BLOCKING FINDINGS, with no blocking findings remaining. The coordinator authorized merge.
+- Evidence: PR #4 (Implement deterministic artifact ingestion and normalization) was merged to main. PR #4 head: 6d2bcf47d5d15f4267ded952a167555f797a67f6. Merge commit: 06de879024066e5af4c1a0ec28900861aeb82587.
+- Final production evidence contract: EvidenceRecord contains source_id, evidence_id, author, timestamp, source_type, title, uri, artifact_sha256, and content. It excludes timeline_position, business_purpose, semantic classifications, expected conclusions, and next actions. Chronology is derived from validated timezone-aware timestamps, normalized to UTC, and ordered by timestamp then evidence_id.
+- Accepted deferred finding: G02-NB-D1 — _pin_xlsx_modified_timestamp does not verify that exactly one dcterms:modified XML element was replaced. Classification: accepted non-blocking technical debt; not part of the MVP critical path. Deliberately not fixed in the merge operation, per coordinator instruction, since dependencies are pinned, the correction works, repeated generations are byte-identical, openpyxl reopens the resulting workbook, and fixture and ingestion tests pass.
+- Tests: C:\Users\p_pie\.local\bin\uv.exe run pytest tests/test_aurora_fixture.py -v completed with 10 passed.
+- Tests: C:\Users\p_pie\.local\bin\uv.exe run pytest tests/test_ingestion.py -v completed with 40 passed.
+- Tests: C:\Users\p_pie\.local\bin\uv.exe run pytest tests/test_acceptance_project_promise.py -v produced 1 failed only with ReasoningPipelineNotImplementedError; src/continuity_ai/reasoning.py and tests/test_acceptance_project_promise.py remain unmodified.
+- Verification: local main and origin/main matched at 06de879024066e5af4c1a0ec28900861aeb82587 after merge; git status --short was empty; no files were modified after merge.
+- Gate status: Gate G-02 passed.
+- Next action: Define and freeze Gate G-03 evidence-grounded reasoning contract before implementation. Gate G-03 has not started.
