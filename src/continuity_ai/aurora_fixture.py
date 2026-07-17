@@ -14,8 +14,10 @@ from openpyxl import Workbook
 from continuity_ai.models import ArtifactDefinition
 
 FIXED_ZIP_TIMESTAMP = (2026, 7, 17, 9, 0, 0)
-FIXTURE_ROOT = Path("fixtures/project_aurora/generated")
-GROUND_TRUTH_PATH = FIXTURE_ROOT / "ground_truth.json"
+GENERATED_ROOT = Path("fixtures/project_aurora/generated")
+ARTIFACT_ROOT = GENERATED_ROOT / "artifacts"
+TEST_ONLY_ROOT = GENERATED_ROOT / "test_only"
+GROUND_TRUTH_PATH = TEST_ONLY_ROOT / "ground_truth.json"
 
 ARTIFACTS: tuple[ArtifactDefinition, ...] = (
     ArtifactDefinition(
@@ -26,7 +28,7 @@ ARTIFACTS: tuple[ArtifactDefinition, ...] = (
         source_type="email",
         timeline_position=2,
         business_purpose="Formal investor approval for moving the shoot to Northlight Studio.",
-        relative_path="fixtures/project_aurora/generated/email/investor_approval.eml",
+        relative_path="fixtures/project_aurora/generated/artifacts/email/investor_approval.eml",
         title="Investor approval for Northlight Studio move",
     ),
     ArtifactDefinition(
@@ -37,7 +39,7 @@ ARTIFACTS: tuple[ArtifactDefinition, ...] = (
         source_type="calendar",
         timeline_position=4,
         business_purpose="Production calendar entry that still directs crew to Harbor House.",
-        relative_path="fixtures/project_aurora/generated/calendar/production_calendar.ics",
+        relative_path="fixtures/project_aurora/generated/artifacts/calendar/production_calendar.ics",
         title="Production calendar shoot location",
     ),
     ArtifactDefinition(
@@ -48,7 +50,7 @@ ARTIFACTS: tuple[ArtifactDefinition, ...] = (
         source_type="spreadsheet",
         timeline_position=3,
         business_purpose="Budget v4 carrying Northlight Studio cost lines.",
-        relative_path="fixtures/project_aurora/generated/budget/budget_v4.xlsx",
+        relative_path="fixtures/project_aurora/generated/artifacts/budget/budget_v4.xlsx",
         title="Project Aurora budget v4",
     ),
     ArtifactDefinition(
@@ -59,7 +61,7 @@ ARTIFACTS: tuple[ArtifactDefinition, ...] = (
         source_type="pdf",
         timeline_position=5,
         business_purpose="Current call sheet that still lists Harbor House.",
-        relative_path="fixtures/project_aurora/generated/call_sheets/current_call_sheet.pdf",
+        relative_path="fixtures/project_aurora/generated/artifacts/call_sheets/current_call_sheet.pdf",
         title="Current call sheet",
     ),
     ArtifactDefinition(
@@ -70,7 +72,7 @@ ARTIFACTS: tuple[ArtifactDefinition, ...] = (
         source_type="markdown",
         timeline_position=6,
         business_purpose="Crew briefing note scheduled for the following day.",
-        relative_path="fixtures/project_aurora/generated/notes/crew_briefing.md",
+        relative_path="fixtures/project_aurora/generated/artifacts/notes/crew_briefing.md",
         title="Crew briefing preparation note",
     ),
 )

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from continuity_ai.artifact_io import validate_production_artifact_root
+
 
 class ReasoningPipelineNotImplementedError(NotImplementedError):
     """Raised until the evidence-grounded reasoning pipeline is implemented."""
@@ -17,6 +19,7 @@ def answer_morning_question(project_root: Path, question: str) -> dict[str, obje
     ground truth data.
     """
 
+    validate_production_artifact_root(project_root)
     raise ReasoningPipelineNotImplementedError(
         "Evidence-grounded reasoning pipeline is not implemented yet."
     )

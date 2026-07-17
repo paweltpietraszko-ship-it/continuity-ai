@@ -76,16 +76,16 @@ Acceptance criteria:
 - pytest is configured.
 - The architecture is clean and modular.
 - No production AI call exists yet.
-- One documented command creates all scenario artifacts into fixtures/project_aurora/generated/.
-- Required artifact formats are generated into fixtures/project_aurora/generated/: EML investor approval email, ICS production calendar, XLSX budget v4, PDF current call sheet, Markdown crew briefing or project note, and JSON ground truth for tests only.
+- One documented command creates production scenario artifacts into fixtures/project_aurora/generated/artifacts/ and test-only ground truth into fixtures/project_aurora/generated/test_only/.
+- Required production artifact formats are generated into fixtures/project_aurora/generated/artifacts/: EML investor approval email, ICS production calendar, XLSX budget v4, PDF current call sheet, and Markdown crew briefing or project note. JSON ground truth is generated only into fixtures/project_aurora/generated/test_only/.
 - Every artifact has a stable source ID, author, timestamp, source type, timeline position, business purpose, and openable repository-relative path or URI.
 - Fixture definitions are fixed.
 - Output is deterministic and generated artifact outputs are intentionally not committed to Git.
 - Evidence IDs are stable.
 - Checksums are stable where practical.
 - Business content is not random.
-- Production modules do not depend on `ground_truth.json`.
-- Tests verify required artifacts, required source IDs, parseability, deterministic reruns, ground truth contents, and production independence from `ground_truth.json`.
+- Production modules do not depend on `ground_truth.json`, do not receive the test_only directory, and the production artifact input directory contains no ground_truth.json file.
+- Tests verify required artifacts, required source IDs, parseability with real parsers, two independent byte-identical generations, ground truth contents, and production independence from `ground_truth.json`.
 - A separate final-product acceptance test exists and fails because the reasoning pipeline does not exist yet.
 - The acceptance test is not marked xfail or skip.
 - The acceptance test does not pass through placeholder production output, mocks, or copied expected output.

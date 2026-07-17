@@ -10,7 +10,7 @@ def test_final_product_promise_finds_aurora_continuity_break(tmp_path: Path) -> 
     generate_project_aurora_fixture(tmp_path)
 
     result = answer_morning_question(
-        tmp_path / "fixtures/project_aurora/generated",
+        tmp_path / "fixtures/project_aurora/generated/artifacts",
         "What changed overnight, what contradicts itself, and what needs attention next?",
     )
 

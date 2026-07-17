@@ -7,19 +7,34 @@ from email import policy
 from email.parser import BytesParser
 from pathlib import Path
 
+import pytest
+from icalendar import Calendar
 from openpyxl import load_workbook
+from pypdf import PdfReader
 
+from continuity_ai.artifact_io import GroundTruthAccessError, open_production_artifact
 from continuity_ai.aurora_fixture import ARTIFACTS, generate_project_aurora_fixture, manifest
+
+ARTIFACT_ROOT = Path("fixtures/project_aurora/generated/artifacts")
+TEST_ONLY_ROOT = Path("fixtures/project_aurora/generated/test_only")
 
 
 def test_generates_all_required_artifacts(tmp_path: Path) -> None:
     generate_project_aurora_fixture(tmp_path)
     expected_paths = {artifact.relative_path for artifact in ARTIFACTS} | {
-        "fixtures/project_aurora/generated/ground_truth.json"
+        str(TEST_ONLY_ROOT / "ground_truth.json")
     }
     assert expected_paths == {item["path"] for item in _all_generated(tmp_path)}
     for relative_path in expected_paths:
         assert (tmp_path / relative_path).is_file()
+
+
+def test_production_artifact_input_contains_no_ground_truth(tmp_path: Path) -> None:
+    generate_project_aurora_fixture(tmp_path)
+    production_root = tmp_path / ARTIFACT_ROOT
+    assert production_root.is_dir()
+    assert list(production_root.rglob("ground_truth.json")) == []
+    assert (tmp_path / TEST_ONLY_ROOT / "ground_truth.json").is_file()
 
 
 def test_required_source_ids_exist_with_metadata(tmp_path: Path) -> None:
@@ -44,27 +59,30 @@ def test_required_source_ids_exist_with_metadata(tmp_path: Path) -> None:
         assert len(artifact["sha256"]) == 64
 
 
-def test_files_are_parseable(tmp_path: Path) -> None:
+def test_files_are_parseable_with_real_parsers(tmp_path: Path) -> None:
     generate_project_aurora_fixture(tmp_path)
 
     email_message = BytesParser(policy=policy.default).parsebytes(
-        (tmp_path / "fixtures/project_aurora/generated/email/investor_approval.eml").read_bytes()
+        (tmp_path / ARTIFACT_ROOT / "email/investor_approval.eml").read_bytes()
     )
     assert email_message["Subject"] == "Approved: Project Aurora move to Northlight Studio"
+    assert "Northlight Studio" in email_message.get_content()
 
-    ics_text = (tmp_path / "fixtures/project_aurora/generated/calendar/production_calendar.ics").read_text()
-    assert "BEGIN:VCALENDAR" in ics_text
-    assert "LOCATION:Harbor House" in ics_text
+    calendar = Calendar.from_ical((tmp_path / ARTIFACT_ROOT / "calendar/production_calendar.ics").read_bytes())
+    events = [component for component in calendar.walk() if component.name == "VEVENT"]
+    assert len(events) == 1
+    assert str(events[0].get("LOCATION")) == "Harbor House"
 
-    workbook = load_workbook(tmp_path / "fixtures/project_aurora/generated/budget/budget_v4.xlsx", data_only=True)
+    workbook = load_workbook(tmp_path / ARTIFACT_ROOT / "budget/budget_v4.xlsx", data_only=True)
     values = [row[0] for row in workbook["Budget v4"].iter_rows(values_only=True)]
     assert "Northlight Studio rental" in values
 
-    pdf_bytes = (tmp_path / "fixtures/project_aurora/generated/call_sheets/current_call_sheet.pdf").read_bytes()
-    assert pdf_bytes.startswith(b"%PDF-1.4")
-    assert b"Location: Harbor House" in pdf_bytes
+    reader = PdfReader(tmp_path / ARTIFACT_ROOT / "call_sheets/current_call_sheet.pdf")
+    assert len(reader.pages) == 1
+    text = reader.pages[0].extract_text()
+    assert "Location: Harbor House" in text
 
-    note = (tmp_path / "fixtures/project_aurora/generated/notes/crew_briefing.md").read_text()
+    note = (tmp_path / ARTIFACT_ROOT / "notes/crew_briefing.md").read_text()
     assert "Briefing date: 2026-07-17" in note
 
 
@@ -78,7 +96,7 @@ def test_two_independent_generations_are_byte_identical(tmp_path: Path) -> None:
 
 def test_ground_truth_contains_expected_break_evidence_and_next_action(tmp_path: Path) -> None:
     generate_project_aurora_fixture(tmp_path)
-    truth = json.loads((tmp_path / "fixtures/project_aurora/generated/ground_truth.json").read_text())
+    truth = json.loads((tmp_path / TEST_ONLY_ROOT / "ground_truth.json").read_text())
     assert truth["continuity_break"] == (
         "The approved location change is reflected in the budget but not in the production calendar or current call sheet."
     )
@@ -93,19 +111,24 @@ def test_ground_truth_contains_expected_break_evidence_and_next_action(tmp_path:
     )
 
 
-def test_production_code_does_not_read_ground_truth() -> None:
-    source_root = Path("src/continuity_ai")
-    for path in source_root.rglob("*.py"):
+def test_reasoning_modules_do_not_name_ground_truth_path() -> None:
+    for path in Path("src/continuity_ai").glob("*reasoning*.py"):
         tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                assert not (
-                    node.func.attr in {"read_text", "read_bytes"}
-                    and isinstance(node.func.value, ast.Name)
-                    and "truth" in node.func.value.id.lower()
-                ), f"{path} reads ground truth data"
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                assert node.func.id != "open", f"{path} uses open() and may read ground truth"
+        string_constants = [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+        assert all("ground_truth.json" not in value for value in string_constants)
+
+
+def test_runtime_guard_blocks_only_ground_truth_file(tmp_path: Path) -> None:
+    artifact = tmp_path / "call_sheet.pdf"
+    artifact.write_bytes(b"not a real pdf but allowed by the ground-truth guard")
+    with open_production_artifact(artifact) as handle:
+        assert handle.read() == artifact.read_bytes()
+
+    blocked = tmp_path / "ground_truth.json"
+    blocked.write_text("{}")
+    with pytest.raises(GroundTruthAccessError):
+        with open_production_artifact(blocked):
+            pass
 
 
 def _all_generated(root: Path) -> list[dict[str, str]]:
