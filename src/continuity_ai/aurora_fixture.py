@@ -18,6 +18,8 @@ GENERATED_ROOT = Path("fixtures/project_aurora/generated")
 ARTIFACT_ROOT = GENERATED_ROOT / "artifacts"
 TEST_ONLY_ROOT = GENERATED_ROOT / "test_only"
 GROUND_TRUTH_PATH = TEST_ONLY_ROOT / "ground_truth.json"
+EVIDENCE_MANIFEST_PATH = ARTIFACT_ROOT / "evidence_manifest.json"
+_ARTIFACT_ROOT_PREFIX = ARTIFACT_ROOT.as_posix() + "/"
 
 ARTIFACTS: tuple[ArtifactDefinition, ...] = (
     ArtifactDefinition(
@@ -89,10 +91,15 @@ def generate_project_aurora_fixture(output_root: Path) -> list[dict[str, str]]:
         content_writer(artifact, path)
         written.append({"path": artifact.relative_path, "sha256": _sha256(path)})
 
+    manifest_path = output_root / EVIDENCE_MANIFEST_PATH
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_text_if_changed(manifest_path, _evidence_manifest_json(output_root))
+    written.append({"path": EVIDENCE_MANIFEST_PATH.as_posix(), "sha256": _sha256(manifest_path)})
+
     truth_path = output_root / GROUND_TRUTH_PATH
     truth_path.parent.mkdir(parents=True, exist_ok=True)
     _write_text_if_changed(truth_path, _ground_truth_json())
-    written.append({"path": str(GROUND_TRUTH_PATH), "sha256": _sha256(truth_path)})
+    written.append({"path": GROUND_TRUTH_PATH.as_posix(), "sha256": _sha256(truth_path)})
     return written
 
 
@@ -220,6 +227,29 @@ def _write_markdown(artifact: ArtifactDefinition, path: Path) -> None:
 The briefing must resolve any mismatch between approved production changes and crew-facing documents before call time.
 """
     _write_text_if_changed(path, text)
+
+
+def _evidence_manifest_json(output_root: Path) -> str:
+    payload = {
+        "schema_version": 1,
+        "project": "Project Aurora",
+        "artifacts": [
+            {
+                "source_id": artifact.source_id,
+                "evidence_id": artifact.evidence_id,
+                "author": artifact.author,
+                "timestamp": artifact.timestamp,
+                "source_type": artifact.source_type,
+                "timeline_position": artifact.timeline_position,
+                "business_purpose": artifact.business_purpose,
+                "title": artifact.title,
+                "uri": artifact.relative_path.removeprefix(_ARTIFACT_ROOT_PREFIX),
+                "sha256": _sha256(output_root / artifact.relative_path),
+            }
+            for artifact in sorted(ARTIFACTS, key=lambda item: item.source_id)
+        ],
+    }
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
 def _ground_truth_json() -> str:

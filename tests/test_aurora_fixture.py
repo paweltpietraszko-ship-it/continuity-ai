@@ -17,7 +17,12 @@ from continuity_ai.artifact_io import (
     open_production_artifact,
     validate_production_artifact_root,
 )
-from continuity_ai.aurora_fixture import ARTIFACTS, generate_project_aurora_fixture, manifest
+from continuity_ai.aurora_fixture import (
+    ARTIFACTS,
+    EVIDENCE_MANIFEST_PATH,
+    generate_project_aurora_fixture,
+    manifest,
+)
 
 ARTIFACT_ROOT = Path("fixtures/project_aurora/generated/artifacts")
 TEST_ONLY_ROOT = Path("fixtures/project_aurora/generated/test_only")
@@ -26,7 +31,8 @@ TEST_ONLY_ROOT = Path("fixtures/project_aurora/generated/test_only")
 def test_generates_all_required_artifacts(tmp_path: Path) -> None:
     generate_project_aurora_fixture(tmp_path)
     expected_paths = {artifact.relative_path for artifact in ARTIFACTS} | {
-        (TEST_ONLY_ROOT / "ground_truth.json").as_posix()
+        (TEST_ONLY_ROOT / "ground_truth.json").as_posix(),
+        EVIDENCE_MANIFEST_PATH.as_posix(),
     }
     assert expected_paths == {item["path"] for item in _all_generated(tmp_path)}
     for relative_path in expected_paths:

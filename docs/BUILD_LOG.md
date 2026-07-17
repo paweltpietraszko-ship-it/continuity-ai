@@ -60,3 +60,17 @@
 - Working tree: git status --short was empty.
 - Gate status: Gate G-01 passed.
 - Next action: Implement Gate G-02 deterministic artifact ingestion and normalization without AI reasoning.
+
+## 2026-07-17 Gate G-02 Deterministic Artifact Ingestion
+
+- Gate: Started and implemented Gate G-02 Deterministic Artifact Ingestion and Normalization.
+- Decision: Extend the fixture generator to write fixtures/project_aurora/generated/artifacts/evidence_manifest.json as production evidence metadata (schema_version, project, artifacts), deterministic and sorted, containing checksums of the five evidence artifacts but not its own checksum, and never referencing ground_truth.json or test_only.
+- Decision: Add a frozen typed EvidenceRecord model (src/continuity_ai/models.py) holding normalized evidence content without Project Aurora expected conclusions.
+- Decision: Add src/continuity_ai/ingestion.py with ingest_artifacts(artifact_root), which calls validate_production_artifact_root, reads and schema-validates evidence_manifest.json, rejects duplicate source_id/evidence_id, unsupported source types, absolute paths, path traversal, and any ground_truth/test_only reference, resolves and contains every artifact path under artifact_root, verifies SHA-256 before parsing, parses with real parsers (email.parser.BytesParser, icalendar, openpyxl, pypdf, UTF-8 text), and returns EvidenceRecord tuples sorted by timeline_position then evidence_id. The module does not import continuity_ai.aurora_fixture, ARTIFACTS, or ground truth, and makes no AI or network call.
+- Decision: Gate G-02 performs no contradiction detection, summarization, or next-action generation; the Continuity Break is not detected in this gate.
+- Evidence: fixtures/project_aurora/generated/artifacts/evidence_manifest.json is production evidence metadata, not test ground truth; it is generated only under the production artifact root.
+- Tests: pytest tests/test_aurora_fixture.py -v completed with 9 passed (updated only to also expect evidence_manifest.json in the generated artifact set).
+- Tests: pytest tests/test_ingestion.py -v completed with 18 passed, covering five-record production, stable source/evidence IDs, deterministic ordering, real-parser material-text extraction, byte-identical records and manifest across two independent generations, and fail-closed behavior for checksum mismatch, missing manifest, malformed manifest, duplicate source_id, duplicate evidence_id, unsupported source type, absolute paths, path traversal, and ground_truth/test_only references, plus static checks that ingestion does not import the fixture generator and that production reasoning remains unimplemented.
+- Tests: pytest tests/test_acceptance_project_promise.py -v produced 1 failed only with ReasoningPipelineNotImplementedError; src/continuity_ai/reasoning.py and tests/test_acceptance_project_promise.py were not modified.
+- Tooling note: `uv` was not available in this local verification environment; tests were executed directly against the project's pinned dependency versions instead of `uv run`.
+- Gate status: Gate G-02 implemented and locally verified; not declared passed until the pull request is reviewed, merged, and re-verified from GitHub-persisted history.
