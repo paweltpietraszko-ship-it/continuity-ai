@@ -41,3 +41,13 @@
 - Scope: The failure concerned test path representation, not generated artifact contents or byte determinism.
 - Handoff: The fix was returned to Codex, the primary implementer.
 - Gate status: Windows verification has not passed until the fixture tests are rerun on Windows.
+
+## 2026-07-17 Gate G-01 Human Windows Verification
+
+- Environment: Windows 11 local checkout synchronized to the GitHub PR head.
+- Tooling: uv 0.11.29 installed.
+- Setup: uv sync completed using CPython 3.14.4.
+- Fixture result: uv run pytest tests/test_aurora_fixture.py -v completed with 9 passed.
+- Acceptance result: uv run pytest tests/test_acceptance_project_promise.py -v produced the expected failure only with ReasoningPipelineNotImplementedError.
+- Resolution: The previously reported Windows path-separator blocker is resolved.
+- Gate status: G-01 is not declared passed; merge and post-merge verification remain.
