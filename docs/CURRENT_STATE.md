@@ -29,7 +29,7 @@
 
 ## 2026-07-17 PR #9 Repair Status
 
-- PR #9 is open, unmerged, and currently points to 88268b09161bbdfcc7115ad6ff6417cdd96087ca.
+- PR #9 is open and unmerged. The latest reviewed code checkpoint is 88268b09161bbdfcc7115ad6ff6417cdd96087ca; later commits on the branch may contain documentation-only updates.
 - The branch contains the original Codex implementation (a88b3f7dbe3fc4dd972cf206d4174078cdb41cf5) plus three reviewed repair commits: Windows vault directory sync, vault initialization protection with restored error codes, and proposal-session ownership binding.
 - Repaired: Windows vault portability (parent-directory fsync no longer fails on platforms without os.O_DIRECTORY), vault initialization protection (rejects an existing target path, empty/whitespace owner name, empty/whitespace password) with restored stable error-contract serialization (code, message, object_id), and proposal session ownership (attestation and analysis-revision proposals are bound to the creating session and invalidated on lock or session replacement).
 - Current verified local full-suite result: 78 passed.
