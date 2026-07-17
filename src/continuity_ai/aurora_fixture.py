@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import zipfile
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -18,6 +19,8 @@ GENERATED_ROOT = Path("fixtures/project_aurora/generated")
 ARTIFACT_ROOT = GENERATED_ROOT / "artifacts"
 TEST_ONLY_ROOT = GENERATED_ROOT / "test_only"
 GROUND_TRUTH_PATH = TEST_ONLY_ROOT / "ground_truth.json"
+EVIDENCE_MANIFEST_PATH = ARTIFACT_ROOT / "evidence_manifest.json"
+_ARTIFACT_ROOT_PREFIX = ARTIFACT_ROOT.as_posix() + "/"
 
 ARTIFACTS: tuple[ArtifactDefinition, ...] = (
     ArtifactDefinition(
@@ -89,10 +92,15 @@ def generate_project_aurora_fixture(output_root: Path) -> list[dict[str, str]]:
         content_writer(artifact, path)
         written.append({"path": artifact.relative_path, "sha256": _sha256(path)})
 
+    manifest_path = output_root / EVIDENCE_MANIFEST_PATH
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_text_if_changed(manifest_path, _evidence_manifest_json(output_root))
+    written.append({"path": EVIDENCE_MANIFEST_PATH.as_posix(), "sha256": _sha256(manifest_path)})
+
     truth_path = output_root / GROUND_TRUTH_PATH
     truth_path.parent.mkdir(parents=True, exist_ok=True)
     _write_text_if_changed(truth_path, _ground_truth_json())
-    written.append({"path": str(GROUND_TRUTH_PATH), "sha256": _sha256(truth_path)})
+    written.append({"path": GROUND_TRUTH_PATH.as_posix(), "sha256": _sha256(truth_path)})
     return written
 
 
@@ -175,6 +183,10 @@ def _write_xlsx(artifact: ArtifactDefinition, path: Path) -> None:
     workbook.properties.created = fixed_time
     workbook.properties.modified = fixed_time
     workbook.save(path)
+    # openpyxl's save_workbook() unconditionally overwrites properties.modified
+    # with the real wall-clock time during save, discarding the fixed value set
+    # above; repin it in the written XML so output is deterministic regardless.
+    _pin_xlsx_modified_timestamp(path, fixed_time)
     _normalize_zip(path)
 
 
@@ -222,6 +234,30 @@ The briefing must resolve any mismatch between approved production changes and c
     _write_text_if_changed(path, text)
 
 
+def _evidence_manifest_json(output_root: Path) -> str:
+    # timeline_position and business_purpose are deliberately omitted: they are
+    # interpretive fixture metadata, not facts the artifact itself attests to,
+    # and production ingestion must never receive them.
+    payload = {
+        "schema_version": 1,
+        "project": "Project Aurora",
+        "artifacts": [
+            {
+                "source_id": artifact.source_id,
+                "evidence_id": artifact.evidence_id,
+                "author": artifact.author,
+                "timestamp": artifact.timestamp,
+                "source_type": artifact.source_type,
+                "title": artifact.title,
+                "uri": artifact.relative_path.removeprefix(_ARTIFACT_ROOT_PREFIX),
+                "sha256": _sha256(output_root / artifact.relative_path),
+            }
+            for artifact in sorted(ARTIFACTS, key=lambda item: item.source_id)
+        ],
+    }
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
 def _ground_truth_json() -> str:
     payload = {
         "project": "Project Aurora",
@@ -249,6 +285,24 @@ def _write_bytes_if_changed(path: Path, data: bytes) -> None:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+_CORE_XML_MODIFIED_PATTERN = re.compile(
+    rb'(<dcterms:modified xsi:type="dcterms:W3CDTF">)[^<]*(</dcterms:modified>)'
+)
+
+
+def _pin_xlsx_modified_timestamp(path: Path, fixed_time: datetime) -> None:
+    fixed_iso = fixed_time.strftime("%Y-%m-%dT%H:%M:%SZ").encode("ascii")
+    with zipfile.ZipFile(path, "r") as archive:
+        entries = {info.filename: archive.read(info.filename) for info in archive.infolist()}
+    entries["docProps/core.xml"] = _CORE_XML_MODIFIED_PATTERN.sub(
+        lambda match: match.group(1) + fixed_iso + match.group(2),
+        entries["docProps/core.xml"],
+    )
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
 
 
 def _normalize_zip(path: Path) -> None:

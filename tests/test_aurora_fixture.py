@@ -17,7 +17,12 @@ from continuity_ai.artifact_io import (
     open_production_artifact,
     validate_production_artifact_root,
 )
-from continuity_ai.aurora_fixture import ARTIFACTS, generate_project_aurora_fixture, manifest
+from continuity_ai.aurora_fixture import (
+    ARTIFACTS,
+    EVIDENCE_MANIFEST_PATH,
+    generate_project_aurora_fixture,
+    manifest,
+)
 
 ARTIFACT_ROOT = Path("fixtures/project_aurora/generated/artifacts")
 TEST_ONLY_ROOT = Path("fixtures/project_aurora/generated/test_only")
@@ -26,7 +31,8 @@ TEST_ONLY_ROOT = Path("fixtures/project_aurora/generated/test_only")
 def test_generates_all_required_artifacts(tmp_path: Path) -> None:
     generate_project_aurora_fixture(tmp_path)
     expected_paths = {artifact.relative_path for artifact in ARTIFACTS} | {
-        (TEST_ONLY_ROOT / "ground_truth.json").as_posix()
+        (TEST_ONLY_ROOT / "ground_truth.json").as_posix(),
+        EVIDENCE_MANIFEST_PATH.as_posix(),
     }
     assert expected_paths == {item["path"] for item in _all_generated(tmp_path)}
     for relative_path in expected_paths:
@@ -59,6 +65,19 @@ def test_validate_production_artifact_root_accepts_only_artifacts_directory(tmp_
     for root in rejected_roots:
         with pytest.raises(GroundTruthAccessError):
             validate_production_artifact_root(root)
+
+
+def test_validate_production_artifact_root_rejects_case_variants(tmp_path: Path) -> None:
+    variant_dir_root = tmp_path / "case_variant_dir_root"
+    (variant_dir_root / "TEST_ONLY").mkdir(parents=True)
+    with pytest.raises(GroundTruthAccessError):
+        validate_production_artifact_root(variant_dir_root)
+
+    variant_file_root = tmp_path / "case_variant_file_root"
+    variant_file_root.mkdir()
+    (variant_file_root / "Ground_Truth.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(GroundTruthAccessError):
+        validate_production_artifact_root(variant_file_root)
 
 
 def test_required_source_ids_exist_with_metadata(tmp_path: Path) -> None:
@@ -152,6 +171,12 @@ def test_runtime_guard_blocks_only_ground_truth_file(tmp_path: Path) -> None:
     blocked.write_text("{}")
     with pytest.raises(GroundTruthAccessError):
         with open_production_artifact(blocked):
+            pass
+
+    blocked_case_variant = tmp_path / "Ground_Truth.JSON"
+    blocked_case_variant.write_text("{}")
+    with pytest.raises(GroundTruthAccessError):
+        with open_production_artifact(blocked_case_variant):
             pass
 
 
