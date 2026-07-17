@@ -26,3 +26,12 @@
 - A missing decision provenance case is a Continuity Break when the currently available project sources show a material project-state change but contain no approval, decision, rationale, or linked note explaining that change.
 - User-visible language must describe what Continuity AI found or could not find in ordinary human language and must not expose internal enum values, error codes, raw exception class names, object identifiers, or traceback details.
 - The normative record for this correction is `docs/GATE_G03_DECISION_PROVENANCE_AND_HUMAN_LANGUAGE_ADDENDUM_v0.1.md`.
+
+## 2026-07-17 PR #9 Repair Status
+
+- PR #9 is open, unmerged, and currently points to 88268b09161bbdfcc7115ad6ff6417cdd96087ca.
+- The branch contains the original Codex implementation (a88b3f7dbe3fc4dd972cf206d4174078cdb41cf5) plus three reviewed repair commits: Windows vault directory sync, vault initialization protection with restored error codes, and proposal-session ownership binding.
+- Repaired: Windows vault portability (parent-directory fsync no longer fails on platforms without os.O_DIRECTORY), vault initialization protection (rejects an existing target path, empty/whitespace owner name, empty/whitespace password) with restored stable error-contract serialization (code, message, object_id), and proposal session ownership (attestation and analysis-revision proposals are bound to the creating session and invalidated on lock or session replacement).
+- Current verified local full-suite result: 78 passed.
+- The destructive Cursor audit remains BLOCK: the unresolved vertical-flow, provider, grounding, persistence, and end-to-end test blockers remain (see Build Log, 2026-07-17 PR #9 Repair Status and Outstanding Blockers).
+- Next action: a narrowly scoped repair of the real bridge vertical flow. No merge decision has been made.

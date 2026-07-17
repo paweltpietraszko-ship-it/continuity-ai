@@ -114,3 +114,40 @@
 - Decision: Add a normative addendum at `docs/GATE_G03_DECISION_PROVENANCE_AND_HUMAN_LANGUAGE_ADDENDUM_v0.1.md` and make it authoritative over earlier G-03 text where conflicts exist.
 - Decision: Audit public output language so UI-facing messages describe what Continuity AI found or could not find, rather than exposing internal enum values, error codes, raw exception names, object IDs, or tracebacks.
 - Tests: complete offline test suite and whitespace checks are required before committing the correction.
+
+## 2026-07-17 PR #9 Repair Status and Outstanding Blockers
+
+- Status: PR #9 remains open and unmerged.
+- Frozen base: 792c5332b33310eca8e51216605ef9f75b13ead1.
+- Original Codex implementation commit: a88b3f7dbe3fc4dd972cf206d4174078cdb41cf5.
+- Audit: Cursor destructive audit returned BLOCK.
+- Incident: an accidental local Cursor implementation commit 20676de was hard-reset to a88b3f7 before any push; the working tree was clean afterward and no Cursor implementation was retained.
+- Accepted Windows portability repair:
+  - commit 1a2fdc511ddfeb9b68b1dcea2c34c3e977fd10eb
+  - message: Fix Windows vault directory sync
+  - full suite: 63 passed
+- Accepted vault initialization and stable error-contract repair:
+  - commit d8066ae2bc0aeee9df1a2dd2bb1d610c7e0b0929
+  - message: Protect vault initialization and restore error codes
+  - full suite: 68 passed
+- Accepted proposal-session ownership repair:
+  - commit 88268b09161bbdfcc7115ad6ff6417cdd96087ca
+  - message: Bind proposals to active vault sessions
+  - targeted suite: 27 passed
+  - full suite: 78 passed
+- All three repair pushes were normal fast-forwards.
+- No review-export .diff file was committed.
+- These repairs do not close the full Cursor audit.
+- Gate G-03 and PR #9 must not be described as passed or ready to merge yet.
+- Remaining unresolved blocker groups:
+  - bridge commands are still stubs rather than a real vertical flow;
+  - production reasoning still selects the Aurora fake provider;
+  - OpenAI adapter does not yet receive the evidence, spans, prompts, and strict schema required by the contract;
+  - conversation routing and citations remain insufficiently grounded;
+  - analyses, snapshots, and conversation state are not yet persisted end-to-end;
+  - acceptance and end-to-end tests remain inadequate, including network isolation.
+- Coordinator audit classifications:
+  - Cursor N-3 was rejected as a production defect: the universal validator cannot prove semantic correctness; exact Aurora role mapping belongs in tests.
+  - Cursor M-D2 was rejected because the later human-language addendum is authoritative.
+  - B-D1 remains accepted only as structural span validation; deterministic code cannot prove semantic relevance.
+  - Hostile live-model quotation testing, vault rollback, and coarse line spans remain deferred.
