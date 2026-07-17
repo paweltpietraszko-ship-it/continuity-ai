@@ -10,8 +10,8 @@ class PublicError(Exception):
     def __str__(self) -> str:
         suffix = f" ({self.object_id})" if self.object_id else ""
         return f"{self.code}: {self.public_message}{suffix}"
-    def to_dict(self) -> dict[str, str]:
-        return {"message": self.public_message}
+    def to_dict(self) -> dict[str, str | None]:
+        return {"code": self.code, "message": self.public_message, "object_id": self.object_id}
 
 class ValidationError(PublicError):
     def __init__(self, object_id: str | None = None) -> None:
@@ -22,6 +22,9 @@ class VaultLockedError(PublicError):
 class VaultAuthError(PublicError):
     def __init__(self) -> None:
         super().__init__("vault_auth_failed", "Continuity AI couldn’t complete this request safely. Nothing was changed.")
+class VaultAlreadyExistsError(PublicError):
+    def __init__(self) -> None:
+        super().__init__("vault_already_exists", "A project vault already exists at this location. Unlock it instead of creating a new one.")
 class InsufficientEvidenceError(PublicError):
     def __init__(self) -> None:
         super().__init__("insufficient_evidence", "I couldn’t find that document in the project sources currently available to Continuity AI.")

@@ -7,7 +7,7 @@ from continuity_ai.ingestion import ingest_artifacts
 from continuity_ai.evidence import artifact_to_reasoning, order_evidence, build_spans, make_snapshot, hydrate_snapshot_citations, compare_live_to_snapshot, content_sha256
 from continuity_ai.reasoning_pipeline import FakeAuroraProvider, run_analysis, validate_analysis
 from continuity_ai.vault import Vault
-from continuity_ai.errors import VaultAuthError, VaultLockedError, ValidationError
+from continuity_ai.errors import VaultAuthError, VaultLockedError, ValidationError, VaultAlreadyExistsError
 from continuity_ai.domain import AuthenticatedUserAttestation, SavedAnalysis
 from continuity_ai.prompts import prompt_snapshots, assert_prompts_clean
 from continuity_ai.bridge import Bridge, encode_response, decode_command
@@ -46,6 +46,43 @@ def test_vault_encryption_lock_and_attestation(tmp_path: Path):
     v.lock(); assert set(s.key_buffer) == {0}
     with pytest.raises(VaultLockedError): v.confirm_attestation("nope")
     with pytest.raises(VaultAuthError): Vault(path).unlock("wrong")
+
+def test_initialize_rejects_existing_vault_and_preserves_bytes(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path); v.initialize("Paweł","secret")
+    original=path.read_bytes(); blocked=Vault(path)
+    with pytest.raises(VaultAlreadyExistsError):
+        blocked.initialize("Someone Else","different")
+    assert path.read_bytes() == original
+    assert blocked.payload is None and blocked.session is None
+    assert list(tmp_path.iterdir()) == [path]
+
+def test_initialize_rejects_empty_owner_name(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path)
+    with pytest.raises(ValidationError): v.initialize("", "secret")
+    assert not path.exists()
+    assert v.payload is None and v.session is None
+    assert list(tmp_path.iterdir()) == []
+
+def test_initialize_rejects_whitespace_only_owner_name(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path)
+    with pytest.raises(ValidationError): v.initialize("   ", "secret")
+    assert not path.exists()
+    assert v.payload is None and v.session is None
+    assert list(tmp_path.iterdir()) == []
+
+def test_initialize_rejects_empty_password(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path)
+    with pytest.raises(ValidationError): v.initialize("Paweł", "")
+    assert not path.exists()
+    assert v.payload is None and v.session is None
+    assert list(tmp_path.iterdir()) == []
+
+def test_initialize_rejects_whitespace_only_password(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path)
+    with pytest.raises(ValidationError): v.initialize("Paweł", "   ")
+    assert not path.exists()
+    assert v.payload is None and v.session is None
+    assert list(tmp_path.iterdir()) == []
 
 def test_vault_write_succeeds_without_o_directory(tmp_path: Path, monkeypatch):
     import os
@@ -109,7 +146,8 @@ def test_decision_provenance_break_requires_two_records_and_no_approval():
 
 def test_public_messages_are_human_and_bridge_does_not_leak_internal_names(tmp_path: Path):
     from continuity_ai.errors import InsufficientEvidenceError, VaultLockedError, ProviderError, ValidationError, ExternalInformationUnavailableError
-    messages=[InsufficientEvidenceError().to_dict()["message"], VaultLockedError().to_dict()["message"], ProviderError().to_dict()["message"], ValidationError().to_dict()["message"], ExternalInformationUnavailableError().to_dict()["message"]]
+    errors=[InsufficientEvidenceError(), VaultLockedError(), ProviderError(), ValidationError(), ExternalInformationUnavailableError()]
+    messages=[e.to_dict()["message"] for e in errors]
     assert "I couldn’t find that document in the project sources currently available to Continuity AI." in messages
     assert "Unlock the project vault to continue." in messages
     assert "I can’t check current external information because web access is not available in this version." in messages
@@ -117,13 +155,27 @@ def test_public_messages_are_human_and_bridge_does_not_leak_internal_names(tmp_p
     for msg in messages:
         for phrase in prohibited:
             assert phrase not in msg
+    # Every controlled error must serialize to exactly {code, message, object_id},
+    # with object_id null when not supplied, and no path/password/owner/traceback/class leakage.
+    for e in errors:
+        serialized=e.to_dict()
+        assert set(serialized.keys()) == {"code", "message", "object_id"}
+        assert serialized["object_id"] is None
+    assert ValidationError().to_dict()["code"] == "validation_error"
+    assert VaultAlreadyExistsError().to_dict()["code"] == "vault_already_exists"
     resp=Bridge().handle({"command":"unlock_vault","path":str(tmp_path/"missing"),"password":"wrong"})
     body=json.dumps(resp, ensure_ascii=False)
     assert resp["ok"] is False
-    assert "code" not in resp["error"] and "object_id" not in body
-    for phrase in prohibited:
+    assert set(resp["error"].keys()) == {"code", "message", "object_id"}
+    assert resp["error"]["object_id"] is None
+    assert resp["error"]["code"] == "vault_auth_failed"
+    prohibited_in_body=[phrase for phrase in prohibited if phrase != "object_id"]
+    for phrase in prohibited_in_body:
         assert phrase not in body
     assert "wrong" not in body
+    assert str(tmp_path) not in body
+    assert "VaultAuthError" not in body
+    assert "Traceback" not in body
 
 def test_no_break_requires_null_break_kind(tmp_path: Path):
     records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")

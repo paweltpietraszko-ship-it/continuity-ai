@@ -6,7 +6,7 @@ from typing import Any
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from continuity_ai.domain import AuditEvent, AttestationProposal, AuthenticatedUserAttestation, OwnerProfile, VaultSession, utc_now
-from continuity_ai.errors import VaultAuthError, VaultLockedError, ValidationError
+from continuity_ai.errors import VaultAuthError, VaultLockedError, ValidationError, VaultAlreadyExistsError
 
 FORMAT="continuity-ai-vault"; VERSION=1
 KDF={"algorithm":"argon2id","time_cost":3,"memory_cost":65536,"parallelism":4,"hash_len":32,"version":19}
@@ -59,6 +59,9 @@ def _decrypt(envelope: dict[str, Any], password: str) -> tuple[dict[str, Any], b
 class Vault:
     def __init__(self, path: Path): self.path=path; self.payload: dict[str, Any] | None=None; self.session: VaultSession | None=None; self.pending_attestations: dict[str, AttestationProposal]={}; self.pending_revisions: dict[str, Any]={}
     def initialize(self, owner_name: str, password: str) -> VaultSession:
+        if self.path.exists(): raise VaultAlreadyExistsError()
+        if not owner_name.strip(): raise ValidationError()
+        if not password.strip(): raise ValidationError()
         payload=empty_payload(owner_name); salt=os.urandom(16); key=derive(password,salt); _write(self.path,_encrypt(payload,key,salt)); self.payload=payload
         return self._session(key)
     def unlock(self, password: str) -> VaultSession:
