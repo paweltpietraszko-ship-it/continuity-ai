@@ -10,10 +10,10 @@ Continuity AI is an evidence-grounded continuity layer, not another project mana
 
 ## Frozen MVP
 
-The frozen MVP is: one project, one morning question, one continuity break, and one evidence-grounded next action.
+The frozen MVP is: one local owner, one project, one verified artifact set, one initial morning question, one meaningful Continuity Break, one evidence-grounded next action, and a continuing conversation with the Continuity AI agent.
 
 Included:
-- One user.
+- One authenticated local owner.
 - One case: Project Aurora.
 - One deterministic synthetic project world.
 - Multiple local artifact formats.
@@ -21,6 +21,14 @@ Included:
 - One meaningful Continuity Break.
 - Openable evidence.
 - One recommended next action.
+- Persistent natural conversation with the Continuity AI agent after the initial analysis.
+- Project-grounded conversational replies linked to evidence; general conversation does not require Project Aurora citations.
+- Authenticated User Attestations added by the owner as evidence, with actor identity, timestamp, channel, provenance, and stable evidence ID.
+- Corrections through superseding evidence records rather than silent overwrite.
+- One encrypted local vault for application-stored project-derived data, conversation history, and user attestations.
+- An append-only evidence log and no anonymous write path.
+- Explicit disclosure that selected evidence is sent to the configured OpenAI API for semantic analysis.
+- Text entry for user attestations. Voice capture and transcription are not required for MVP.
 - Tests.
 - README.
 - Implementation evidence for Codex and GPT-5.6.
@@ -28,16 +36,58 @@ Included:
 Excluded:
 - Live Gmail, Notion, Drive, or Frame.io integrations.
 - OAuth.
-- Multiple cases.
+- Multiple projects or users.
 - Organization memory.
-- LynxMask.
-- Triangulum.
+- LynxMask integration.
+- Voice capture, speech-to-text, or raw-audio storage.
+- Biometric unlock.
+- Team roles or organization authorization.
+- Managed cloud service and centrally funded model usage.
 - Folder monitoring.
 - Autonomous orchestration.
 - Multi-model triangulation.
 - A general synthetic company generator.
-- Desktop packaging.
-- Any feature that does not strengthen the Project Aurora demo.
+- Automatic editing of source documents, calendars, call sheets, or messages.
+- Any feature that does not strengthen the Project Aurora demo or the accepted evidence, conversation, and local-security boundary.
+
+## Evidence Authority and Provenance
+
+The authenticated local owner has authority to add information directly to the project record as an Authenticated User Attestation. Continuity AI does not challenge the owner's authority to add that evidence.
+
+The system must preserve provenance so that artifact evidence and owner attestations remain distinguishable. An attestation records the exact statement, actor identity, timestamp, channel, and evidence ID.
+
+A correction does not silently replace an earlier attestation. It creates a later evidence record that explicitly supersedes the earlier record.
+
+## Conversation Boundary
+
+The user may converse naturally with Continuity AI, including discussion unrelated to Project Aurora.
+
+The product constrains authority, not conversational topics:
+- Project-state claims must be grounded in project evidence or clearly identified user-provided assumptions.
+- General conversation does not require project citations.
+- Current external information requires an implemented external-data tool or an honest statement that the data is unavailable.
+- Conversation alone does not modify project evidence unless the authenticated owner explicitly instructs the system to add an attestation.
+- No source document is modified and no external action is performed without an explicit implemented control.
+
+## Local Security Boundary
+
+The MVP security boundary is intentionally narrow:
+- one local owner;
+- one unlockable local vault;
+- encryption at rest for data stored by Continuity AI;
+- no anonymous write path;
+- append-only evidence history;
+- no confidential document or conversation content in ordinary technical logs.
+
+Original source files remain in locations selected and controlled by the user. Continuity AI is responsible for protecting data it stores itself.
+
+The security contract must describe limitations honestly. Local encryption does not protect an already unlocked process from malware, an operating-system administrator, screen capture, or deliberate export by the owner.
+
+## External Model Boundary
+
+GPT-5.6 is accessed through the OpenAI API, not through a ChatGPT desktop or Plus subscription.
+
+The MVP uses a developer API key held outside source control. The product must state clearly that application-stored project data is encrypted locally, while selected evidence is sent to the configured OpenAI API for semantic analysis.
 
 ## Project Aurora Ground Truth
 
@@ -111,8 +161,15 @@ Pitch:
 - Continuity AI finds where a project no longer agrees with itself.
 - Project Aurora demonstrates a real continuity break: an approved production location change appears in some artifacts but not in operational documents.
 - Continuity AI builds Continuity AI by keeping project memory in the repository.
+- The user can discuss, challenge, and refine the interpretation without surrendering traceability to evidence.
+- Authenticated owner attestations allow real-world information that exists outside documents to enter the project record with provenance.
 
-Roadmap:
+Roadmap after MVP:
+- LynxMask as a local privacy gateway before external model processing, with the insertion point chosen only after a post-MVP pipeline audit.
+- Voice-originated attestations and local transcription; raw audio is not stored by default.
+- Bring-your-own-key configuration for user-managed OpenAI API access.
+- A managed service only after a separate backend, billing, retention, and security review.
+- Biometric unlock, multi-user roles, team authorization, secure export policy, organization-controlled retention, and enterprise key management.
 - Semantic Contract: a repository-level agreement about the meaning of operational terms such as done, verified, current, and decision.
 - Interpretation Break: detection of cases where collaborators use the same word or artifact to mean different things.
 - Live integrations may be considered only after the MVP proves the Project Aurora continuity workflow.
