@@ -47,6 +47,15 @@ def test_vault_encryption_lock_and_attestation(tmp_path: Path):
     with pytest.raises(VaultLockedError): v.confirm_attestation("nope")
     with pytest.raises(VaultAuthError): Vault(path).unlock("wrong")
 
+def test_vault_write_succeeds_without_o_directory(tmp_path: Path, monkeypatch):
+    import os
+    monkeypatch.delattr(os, "O_DIRECTORY", raising=False)
+    path=tmp_path/"vault.bin"; v=Vault(path); s=v.initialize("Paweł","secret")
+    assert path.read_bytes()
+    p=v.propose_attestation("still works"); a=v.confirm_attestation(p.proposal_id)
+    assert a.statement == "still works"
+    assert path.read_bytes()
+
 def test_attestation_validation_and_hash():
     with pytest.raises(ValueError): AuthenticatedUserAttestation("e","a","n","2026-01-01T00:00:00Z","text","   ")
     with pytest.raises(ValueError): AuthenticatedUserAttestation("e","a","n","2026-01-01T00:00:00Z","text","x"*4001)

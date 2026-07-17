@@ -27,9 +27,23 @@ def _write(path: Path, envelope: dict[str, Any]) -> None:
         with os.fdopen(fd,"wb") as f:
             f.write(data); f.flush(); os.fsync(f.fileno())
         os.replace(tmp,path)
-        try:
-            dfd=os.open(path.parent, os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
-        except OSError: pass
+        directory_flag=getattr(os, "O_DIRECTORY", None)
+        if directory_flag is not None:
+            try:
+                dfd=os.open(path.parent, directory_flag)
+            except OSError:
+                dfd=None
+            if dfd is not None:
+                try:
+                    try:
+                        os.fsync(dfd)
+                    except OSError:
+                        pass
+                finally:
+                    try:
+                        os.close(dfd)
+                    except OSError:
+                        pass
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
 def _encrypt(payload: dict[str, Any], key: bytes, salt: bytes) -> dict[str, Any]:
