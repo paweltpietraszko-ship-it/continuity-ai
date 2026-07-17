@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+from email import policy
+from email.parser import BytesParser
+from pathlib import Path
+
+from openpyxl import load_workbook
+
+from continuity_ai.aurora_fixture import ARTIFACTS, generate_project_aurora_fixture, manifest
+
+
+def test_generates_all_required_artifacts(tmp_path: Path) -> None:
+    generate_project_aurora_fixture(tmp_path)
+    expected_paths = {artifact.relative_path for artifact in ARTIFACTS} | {
+        "fixtures/project_aurora/generated/ground_truth.json"
+    }
+    assert expected_paths == {item["path"] for item in _all_generated(tmp_path)}
+    for relative_path in expected_paths:
+        assert (tmp_path / relative_path).is_file()
+
+
+def test_required_source_ids_exist_with_metadata(tmp_path: Path) -> None:
+    generate_project_aurora_fixture(tmp_path)
+    data = manifest(tmp_path)
+    source_ids = {artifact["source_id"] for artifact in data["artifacts"]}
+    assert source_ids == {
+        "aurora-email-investor-approval-001",
+        "aurora-calendar-production-001",
+        "aurora-budget-v4-001",
+        "aurora-callsheet-current-001",
+        "aurora-crew-briefing-note-001",
+    }
+    for artifact in data["artifacts"]:
+        assert artifact["evidence_id"].startswith("EV-AUR-")
+        assert artifact["author"]
+        assert artifact["timestamp"].endswith("Z")
+        assert artifact["source_type"] in {"email", "calendar", "spreadsheet", "pdf", "markdown"}
+        assert isinstance(artifact["timeline_position"], int)
+        assert artifact["business_purpose"]
+        assert (tmp_path / artifact["uri"]).is_file()
+        assert len(artifact["sha256"]) == 64
+
+
+def test_files_are_parseable(tmp_path: Path) -> None:
+    generate_project_aurora_fixture(tmp_path)
+
+    email_message = BytesParser(policy=policy.default).parsebytes(
+        (tmp_path / "fixtures/project_aurora/generated/email/investor_approval.eml").read_bytes()
+    )
+    assert email_message["Subject"] == "Approved: Project Aurora move to Northlight Studio"
+
+    ics_text = (tmp_path / "fixtures/project_aurora/generated/calendar/production_calendar.ics").read_text()
+    assert "BEGIN:VCALENDAR" in ics_text
+    assert "LOCATION:Harbor House" in ics_text
+
+    workbook = load_workbook(tmp_path / "fixtures/project_aurora/generated/budget/budget_v4.xlsx", data_only=True)
+    values = [row[0] for row in workbook["Budget v4"].iter_rows(values_only=True)]
+    assert "Northlight Studio rental" in values
+
+    pdf_bytes = (tmp_path / "fixtures/project_aurora/generated/call_sheets/current_call_sheet.pdf").read_bytes()
+    assert pdf_bytes.startswith(b"%PDF-1.4")
+    assert b"Location: Harbor House" in pdf_bytes
+
+    note = (tmp_path / "fixtures/project_aurora/generated/notes/crew_briefing.md").read_text()
+    assert "Briefing date: 2026-07-17" in note
+
+
+def test_two_independent_generations_are_byte_identical(tmp_path: Path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    generate_project_aurora_fixture(first_root)
+    generate_project_aurora_fixture(second_root)
+    assert _checksums(first_root) == _checksums(second_root)
+
+
+def test_ground_truth_contains_expected_break_evidence_and_next_action(tmp_path: Path) -> None:
+    generate_project_aurora_fixture(tmp_path)
+    truth = json.loads((tmp_path / "fixtures/project_aurora/generated/ground_truth.json").read_text())
+    assert truth["continuity_break"] == (
+        "The approved location change is reflected in the budget but not in the production calendar or current call sheet."
+    )
+    assert truth["required_evidence"] == [
+        "aurora-email-investor-approval-001",
+        "aurora-budget-v4-001",
+        "aurora-calendar-production-001",
+        "aurora-callsheet-current-001",
+    ]
+    assert truth["expected_next_action"] == (
+        "Update the production calendar and call sheet before tomorrow's crew briefing."
+    )
+
+
+def test_production_code_does_not_read_ground_truth() -> None:
+    source_root = Path("src/continuity_ai")
+    for path in source_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                assert not (
+                    node.func.attr in {"read_text", "read_bytes"}
+                    and isinstance(node.func.value, ast.Name)
+                    and "truth" in node.func.value.id.lower()
+                ), f"{path} reads ground truth data"
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                assert node.func.id != "open", f"{path} uses open() and may read ground truth"
+
+
+def _all_generated(root: Path) -> list[dict[str, str]]:
+    return [
+        {"path": str(path.relative_to(root)), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        for path in sorted((root / "fixtures/project_aurora/generated").rglob("*"))
+        if path.is_file()
+    ]
+
+
+def _checksums(root: Path) -> dict[str, str]:
+    return {item["path"]: item["sha256"] for item in _all_generated(root)}

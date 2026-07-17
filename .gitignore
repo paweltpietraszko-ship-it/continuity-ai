@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated Project Aurora fixture outputs are reproducible and not committed.
+fixtures/project_aurora/generated/
