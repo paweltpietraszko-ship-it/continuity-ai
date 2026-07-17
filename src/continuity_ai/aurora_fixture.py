@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import zipfile
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -182,6 +183,10 @@ def _write_xlsx(artifact: ArtifactDefinition, path: Path) -> None:
     workbook.properties.created = fixed_time
     workbook.properties.modified = fixed_time
     workbook.save(path)
+    # openpyxl's save_workbook() unconditionally overwrites properties.modified
+    # with the real wall-clock time during save, discarding the fixed value set
+    # above; repin it in the written XML so output is deterministic regardless.
+    _pin_xlsx_modified_timestamp(path, fixed_time)
     _normalize_zip(path)
 
 
@@ -230,6 +235,9 @@ The briefing must resolve any mismatch between approved production changes and c
 
 
 def _evidence_manifest_json(output_root: Path) -> str:
+    # timeline_position and business_purpose are deliberately omitted: they are
+    # interpretive fixture metadata, not facts the artifact itself attests to,
+    # and production ingestion must never receive them.
     payload = {
         "schema_version": 1,
         "project": "Project Aurora",
@@ -240,8 +248,6 @@ def _evidence_manifest_json(output_root: Path) -> str:
                 "author": artifact.author,
                 "timestamp": artifact.timestamp,
                 "source_type": artifact.source_type,
-                "timeline_position": artifact.timeline_position,
-                "business_purpose": artifact.business_purpose,
                 "title": artifact.title,
                 "uri": artifact.relative_path.removeprefix(_ARTIFACT_ROOT_PREFIX),
                 "sha256": _sha256(output_root / artifact.relative_path),
@@ -279,6 +285,24 @@ def _write_bytes_if_changed(path: Path, data: bytes) -> None:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+_CORE_XML_MODIFIED_PATTERN = re.compile(
+    rb'(<dcterms:modified xsi:type="dcterms:W3CDTF">)[^<]*(</dcterms:modified>)'
+)
+
+
+def _pin_xlsx_modified_timestamp(path: Path, fixed_time: datetime) -> None:
+    fixed_iso = fixed_time.strftime("%Y-%m-%dT%H:%M:%SZ").encode("ascii")
+    with zipfile.ZipFile(path, "r") as archive:
+        entries = {info.filename: archive.read(info.filename) for info in archive.infolist()}
+    entries["docProps/core.xml"] = _CORE_XML_MODIFIED_PATTERN.sub(
+        lambda match: match.group(1) + fixed_iso + match.group(2),
+        entries["docProps/core.xml"],
+    )
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
 
 
 def _normalize_zip(path: Path) -> None:
