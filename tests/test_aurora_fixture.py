@@ -12,7 +12,11 @@ from icalendar import Calendar
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
-from continuity_ai.artifact_io import GroundTruthAccessError, open_production_artifact
+from continuity_ai.artifact_io import (
+    GroundTruthAccessError,
+    open_production_artifact,
+    validate_production_artifact_root,
+)
 from continuity_ai.aurora_fixture import ARTIFACTS, generate_project_aurora_fixture, manifest
 
 ARTIFACT_ROOT = Path("fixtures/project_aurora/generated/artifacts")
@@ -22,7 +26,7 @@ TEST_ONLY_ROOT = Path("fixtures/project_aurora/generated/test_only")
 def test_generates_all_required_artifacts(tmp_path: Path) -> None:
     generate_project_aurora_fixture(tmp_path)
     expected_paths = {artifact.relative_path for artifact in ARTIFACTS} | {
-        str(TEST_ONLY_ROOT / "ground_truth.json")
+        (TEST_ONLY_ROOT / "ground_truth.json").as_posix()
     }
     assert expected_paths == {item["path"] for item in _all_generated(tmp_path)}
     for relative_path in expected_paths:
@@ -35,6 +39,26 @@ def test_production_artifact_input_contains_no_ground_truth(tmp_path: Path) -> N
     assert production_root.is_dir()
     assert list(production_root.rglob("ground_truth.json")) == []
     assert (tmp_path / TEST_ONLY_ROOT / "ground_truth.json").is_file()
+
+
+def test_validate_production_artifact_root_accepts_only_artifacts_directory(tmp_path: Path) -> None:
+    generate_project_aurora_fixture(tmp_path)
+
+    validate_production_artifact_root(tmp_path / ARTIFACT_ROOT)
+
+    rejected_roots = [
+        tmp_path / "fixtures/project_aurora/generated",
+        tmp_path / TEST_ONLY_ROOT,
+    ]
+    broader_root = tmp_path / "broader"
+    nested = broader_root / "nested"
+    nested.mkdir(parents=True)
+    (nested / "ground_truth.json").write_text("{}")
+    rejected_roots.append(broader_root)
+
+    for root in rejected_roots:
+        with pytest.raises(GroundTruthAccessError):
+            validate_production_artifact_root(root)
 
 
 def test_required_source_ids_exist_with_metadata(tmp_path: Path) -> None:
@@ -133,7 +157,7 @@ def test_runtime_guard_blocks_only_ground_truth_file(tmp_path: Path) -> None:
 
 def _all_generated(root: Path) -> list[dict[str, str]]:
     return [
-        {"path": str(path.relative_to(root)), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        {"path": path.relative_to(root).as_posix(), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
         for path in sorted((root / "fixtures/project_aurora/generated").rglob("*"))
         if path.is_file()
     ]

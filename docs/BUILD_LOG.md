@@ -32,3 +32,12 @@
 - Tests: uv run pytest tests/test_acceptance_project_promise.py failed only with ReasoningPipelineNotImplementedError.
 - Known Continuity Breaks in the development process: local Codex history and the GitHub PR history differ; current documentation distinguishes local Codex evidence from GitHub-persisted evidence.
 - Gate status: not declared passed until the PR is merged and verified.
+
+## 2026-07-17 Gate G-01 Windows Path Audit
+
+- Audit: Cursor/Composer 2.5 performed a read-only static and ad hoc audit.
+- Audit: Claude Code performed an independent read-only Windows audit.
+- Finding: The Windows audit found a path-separator failure in tests/test_aurora_fixture.py::test_generates_all_required_artifacts.
+- Scope: The failure concerned test path representation, not generated artifact contents or byte determinism.
+- Handoff: The fix was returned to Codex, the primary implementer.
+- Gate status: Windows verification has not passed until the fixture tests are rerun on Windows.
