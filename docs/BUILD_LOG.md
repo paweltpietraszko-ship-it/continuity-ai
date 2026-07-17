@@ -105,3 +105,12 @@
 - Verification: local main and origin/main matched at 06de879024066e5af4c1a0ec28900861aeb82587 after merge; git status --short was empty; no files were modified after merge.
 - Gate status: Gate G-02 passed.
 - Next action: Define and freeze Gate G-03 evidence-grounded reasoning contract before implementation. Gate G-03 has not started.
+
+## 2026-07-17 Vertical Skeleton Decision-Provenance and Human-Language Correction
+
+- Context: After first vertical-skeleton implementation commit `e4982f3` and before review or merge, the coordinator identified an implementation-blocking correction.
+- Decision: Add `continuity_break_kind` for G-03 `break_found` analyses, with `propagation_break` for approved decisions that have not propagated and `decision_provenance_not_found` for material changes where no approval, decision, rationale, or linked note is found in the available project sources.
+- Decision: Preserve the Project Aurora scenario as `propagation_break`; do not alter the G-02 `EvidenceRecord` contract or move material-change interpretation into G-02.
+- Decision: Add a normative addendum at `docs/GATE_G03_DECISION_PROVENANCE_AND_HUMAN_LANGUAGE_ADDENDUM_v0.1.md` and make it authoritative over earlier G-03 text where conflicts exist.
+- Decision: Audit public output language so UI-facing messages describe what Continuity AI found or could not find, rather than exposing internal enum values, error codes, raw exception names, object IDs, or tracebacks.
+- Tests: complete offline test suite and whitespace checks are required before committing the correction.

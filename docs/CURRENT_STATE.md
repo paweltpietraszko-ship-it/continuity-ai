@@ -18,3 +18,11 @@
 - Excluded from MVP: LynxMask integration, voice, weather/web tools, multiple users or projects, biometrics, password recovery, cloud synchronization, autonomous source changes, and multi-model review inside the application.
 - UI and film remain parallel. UI may render only backend-owned source metadata and exact snapshot quotations. The Project Aurora failure is described as an operational contradiction, document drift, or state drift, not a document-system hallucination.
 - Next action: inspect PR #8 final diff, merge the frozen contracts, then start Codex from the resulting main commit using docs/CODEX_VERTICAL_SKELETON_PROMPT.md.
+
+## 2026-07-17 Vertical Skeleton Correction Before Review
+
+- After the first vertical-skeleton implementation commit `e4982f3`, and before review or merge, an implementation-blocking correction was discovered.
+- Gate G-03 now distinguishes two `break_found` kinds: `propagation_break` and `decision_provenance_not_found`.
+- A missing decision provenance case is a Continuity Break when the currently available project sources show a material project-state change but contain no approval, decision, rationale, or linked note explaining that change.
+- User-visible language must describe what Continuity AI found or could not find in ordinary human language and must not expose internal enum values, error codes, raw exception class names, object identifiers, or traceback details.
+- The normative record for this correction is `docs/GATE_G03_DECISION_PROVENANCE_AND_HUMAN_LANGUAGE_ADDENDUM_v0.1.md`.

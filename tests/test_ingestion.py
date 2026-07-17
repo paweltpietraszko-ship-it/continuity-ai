@@ -17,7 +17,7 @@ from continuity_ai.artifact_io import GroundTruthAccessError
 from continuity_ai.aurora_fixture import ARTIFACT_ROOT, generate_project_aurora_fixture
 from continuity_ai.ingestion import ArtifactIngestionError, ingest_artifacts
 from continuity_ai.models import EvidenceRecord
-from continuity_ai.reasoning import ReasoningPipelineNotImplementedError, answer_morning_question
+from continuity_ai.reasoning import answer_morning_question
 
 MANIFEST_RELATIVE_PATH = ARTIFACT_ROOT / "evidence_manifest.json"
 
@@ -671,7 +671,7 @@ def test_ingestion_module_does_not_import_fixture_generator() -> None:
                 assert "aurora_fixture" not in alias.name
 
 
-def test_production_reasoning_remains_unimplemented(tmp_path: Path) -> None:
+def test_production_reasoning_runs_offline_fake_provider(tmp_path: Path) -> None:
     generate_project_aurora_fixture(tmp_path)
-    with pytest.raises(ReasoningPipelineNotImplementedError):
-        answer_morning_question(tmp_path / ARTIFACT_ROOT, "placeholder question")
+    result = answer_morning_question(tmp_path / ARTIFACT_ROOT, "placeholder question")
+    assert result["analysis_status"] == "break_found"
