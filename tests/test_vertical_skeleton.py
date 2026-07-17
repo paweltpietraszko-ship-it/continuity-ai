@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+from datetime import datetime
 from pathlib import Path
 import pytest
 from continuity_ai.aurora_fixture import generate_project_aurora_fixture
@@ -12,6 +13,7 @@ from continuity_ai.domain import AuthenticatedUserAttestation, SavedAnalysis
 from continuity_ai.prompts import prompt_snapshots, assert_prompts_clean
 from continuity_ai.bridge import Bridge, encode_response, decode_command
 from continuity_ai.openai_provider import OpenAIReasoningProvider
+from continuity_ai.conversation import send_message, confirm_analysis_revision
 
 def aurora(tmp_path: Path):
     generate_project_aurora_fixture(tmp_path)
@@ -83,6 +85,89 @@ def test_initialize_rejects_whitespace_only_password(tmp_path: Path):
     assert not path.exists()
     assert v.payload is None and v.session is None
     assert list(tmp_path.iterdir()) == []
+
+def test_attestation_proposal_stores_creating_session_id(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path); s=v.initialize("Paweł","secret")
+    p=v.propose_attestation("note")
+    assert p.session_id == s.session_id
+    datetime.fromisoformat(p.created_at)
+
+def test_revision_proposal_stores_creating_session_id(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path); s=v.initialize("Paweł","secret")
+    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    resp=send_message("update analysis", records, spans, vault=v, revision_candidate=candidate)
+    assert resp.analysis_revision_proposal.session_id == s.session_id
+    assert resp.analysis_revision_proposal.proposal_id in v.pending_revisions
+    datetime.fromisoformat(resp.analysis_revision_proposal.created_at)
+
+def test_lock_invalidates_attestation_proposals(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path); v.initialize("Paweł","secret")
+    v.propose_attestation("note")
+    v.lock()
+    assert v.pending_attestations == {}
+
+def test_lock_invalidates_revision_proposals(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path); v.initialize("Paweł","secret")
+    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    send_message("update analysis", records, spans, vault=v, revision_candidate=candidate)
+    v.lock()
+    assert v.pending_revisions == {}
+
+def test_successful_unlock_invalidates_both_proposal_types(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path); old=v.initialize("Paweł","secret")
+    v.propose_attestation("note")
+    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    send_message("update analysis", records, spans, vault=v, revision_candidate=candidate)
+    assert v.pending_attestations and v.pending_revisions
+    v.unlock("secret")
+    assert v.pending_attestations == {} and v.pending_revisions == {}
+    assert v.session.session_id != old.session_id
+    assert old.unlocked is False
+    assert set(old.key_buffer) == {0}
+
+def test_attestation_from_session_a_cannot_be_confirmed_in_session_b(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path); v.initialize("Paweł","secret")
+    p=v.propose_attestation("note")
+    v.unlock("secret")
+    v.pending_attestations[p.proposal_id]=p
+    with pytest.raises(ValidationError):
+        v.confirm_attestation(p.proposal_id)
+
+def test_attestation_proposal_cannot_be_confirmed_twice(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path); v.initialize("Paweł","secret")
+    p=v.propose_attestation("note")
+    v.confirm_attestation(p.proposal_id)
+    with pytest.raises(ValidationError):
+        v.confirm_attestation(p.proposal_id)
+
+def test_revision_proposal_cannot_be_confirmed_twice(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path); v.initialize("Paweł","secret")
+    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    resp=send_message("update analysis", records, spans, vault=v, revision_candidate=candidate)
+    proposal_id=resp.analysis_revision_proposal.proposal_id
+    confirm_analysis_revision(v, proposal_id)
+    with pytest.raises(ValidationError):
+        confirm_analysis_revision(v, proposal_id)
+
+def test_revision_proposal_requires_unlocked_vault(tmp_path: Path):
+    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    with pytest.raises(VaultLockedError):
+        send_message("update analysis", records, spans, vault=None, revision_candidate=candidate)
+    path=tmp_path/"vault.bin"; v=Vault(path); v.initialize("Paweł","secret"); v.lock()
+    with pytest.raises(VaultLockedError):
+        send_message("update analysis", records, spans, vault=v, revision_candidate=candidate)
+
+def test_failed_unlock_does_not_create_replacement_session(tmp_path: Path):
+    path=tmp_path/"vault.bin"; v=Vault(path); s=v.initialize("Paweł","secret")
+    p=v.propose_attestation("note")
+    original_key_bytes=bytes(s.key_buffer)
+    with pytest.raises(VaultAuthError):
+        v.unlock("wrong")
+    assert v.session is s
+    assert s.unlocked is True
+    assert bytes(s.key_buffer) == original_key_bytes
+    assert any(b != 0 for b in s.key_buffer)
+    assert p.proposal_id in v.pending_attestations
 
 def test_vault_write_succeeds_without_o_directory(tmp_path: Path, monkeypatch):
     import os

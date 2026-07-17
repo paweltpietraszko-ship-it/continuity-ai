@@ -32,7 +32,7 @@ class AuthenticatedUserAttestation:
 
 @dataclass(frozen=True)
 class AttestationProposal:
-    proposal_id: str; statement: str; channel: Literal["text"] = "text"; supersedes_evidence_id: str | None = None
+    proposal_id: str; statement: str; session_id: str; created_at: str; channel: Literal["text"] = "text"; supersedes_evidence_id: str | None = None
     def __post_init__(self) -> None:
         stmt = self.statement.strip()
         if not stmt or len(stmt) > 4000:
@@ -52,7 +52,7 @@ class AnalysisResult:
 
 @dataclass(frozen=True)
 class AnalysisRevisionProposal:
-    proposal_id: str; candidate: AnalysisResult
+    proposal_id: str; candidate: AnalysisResult; session_id: str; created_at: str
 
 @dataclass(frozen=True)
 class CitationCard:

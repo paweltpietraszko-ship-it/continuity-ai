@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from continuity_ai.domain import AuditEvent, AttestationProposal, AuthenticatedUserAttestation, OwnerProfile, VaultSession, utc_now
+from continuity_ai.domain import AuditEvent, AttestationProposal, AnalysisRevisionProposal, AuthenticatedUserAttestation, OwnerProfile, VaultSession, utc_now
 from continuity_ai.errors import VaultAuthError, VaultLockedError, ValidationError, VaultAlreadyExistsError
 
 FORMAT="continuity-ai-vault"; VERSION=1
@@ -57,7 +57,7 @@ def _decrypt(envelope: dict[str, Any], password: str) -> tuple[dict[str, Any], b
         return json.loads(pt.decode("utf-8")), key
     except Exception as exc: raise VaultAuthError() from exc
 class Vault:
-    def __init__(self, path: Path): self.path=path; self.payload: dict[str, Any] | None=None; self.session: VaultSession | None=None; self.pending_attestations: dict[str, AttestationProposal]={}; self.pending_revisions: dict[str, Any]={}
+    def __init__(self, path: Path): self.path=path; self.payload: dict[str, Any] | None=None; self.session: VaultSession | None=None; self.pending_attestations: dict[str, AttestationProposal]={}; self.pending_revisions: dict[str, AnalysisRevisionProposal]={}
     def initialize(self, owner_name: str, password: str) -> VaultSession:
         if self.path.exists(): raise VaultAlreadyExistsError()
         if not owner_name.strip(): raise ValidationError()
@@ -71,7 +71,12 @@ class Vault:
             raise VaultAuthError() from exc
         payload,key=_decrypt(envelope, password); self.payload=payload; return self._session(key)
     def _session(self, key: bytes) -> VaultSession:
-        assert self.payload; s=VaultSession(self.payload["owner"]["actor_id"], self.payload["vault_id"], "SES-"+uuid.uuid4().hex, True, bytearray(key)); self.session=s; return s
+        assert self.payload
+        if self.session:
+            for i in range(len(self.session.key_buffer)): self.session.key_buffer[i]=0
+            self.session.unlocked=False
+        self.pending_attestations.clear(); self.pending_revisions.clear()
+        s=VaultSession(self.payload["owner"]["actor_id"], self.payload["vault_id"], "SES-"+uuid.uuid4().hex, True, bytearray(key)); self.session=s; return s
     def require(self) -> VaultSession:
         if not self.session or not self.session.unlocked or self.payload is None: raise VaultLockedError()
         return self.session
@@ -83,11 +88,17 @@ class Vault:
     def persist(self) -> None:
         s=self.require(); env=json.loads(self.path.read_text("utf-8")); salt=_ub64(env["salt"]); _write(self.path,_encrypt(self.payload, bytes(s.key_buffer), salt))
     def propose_attestation(self, statement: str, supersedes: str | None=None) -> AttestationProposal:
-        self.require(); p=AttestationProposal("PROP-"+uuid.uuid4().hex, statement, "text", supersedes); self.pending_attestations[p.proposal_id]=p; return p
+        session=self.require()
+        p=AttestationProposal(proposal_id="PROP-"+uuid.uuid4().hex, statement=statement, session_id=session.session_id, created_at=utc_now(), channel="text", supersedes_evidence_id=supersedes)
+        self.pending_attestations[p.proposal_id]=p; return p
     def confirm_attestation(self, proposal_id: str) -> AuthenticatedUserAttestation:
-        self.require(); p=self.pending_attestations.pop(proposal_id); owner=self.payload["owner"]; eid="EV-UA-"+uuid.uuid4().hex
+        session=self.require()
+        p=self.pending_attestations.get(proposal_id)
+        if p is None or p.session_id != session.session_id: raise ValidationError()
+        owner=self.payload["owner"]; eid="EV-UA-"+uuid.uuid4().hex
         existing={a["evidence_id"]:a for a in self.payload["attestations"]}
         if p.supersedes_evidence_id:
             if p.supersedes_evidence_id not in existing or any(a.get("supersedes_evidence_id")==p.supersedes_evidence_id for a in existing.values()): raise ValidationError()
         a=AuthenticatedUserAttestation(eid, owner["actor_id"], owner["display_name"], utc_now(), "text", p.statement, p.supersedes_evidence_id)
-        self.payload["attestations"].append(a.__dict__); self.payload["audit_events"].append(AuditEvent("AUD-"+uuid.uuid4().hex,"attestation_committed",owner["actor_id"],utc_now(),eid,True).__dict__); self.persist(); return a
+        self.payload["attestations"].append(a.__dict__); self.payload["audit_events"].append(AuditEvent("AUD-"+uuid.uuid4().hex,"attestation_committed",owner["actor_id"],utc_now(),eid,True).__dict__); self.persist()
+        del self.pending_attestations[proposal_id]; return a
