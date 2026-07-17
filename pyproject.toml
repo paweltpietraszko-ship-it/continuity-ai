@@ -1,0 +1,27 @@
+[project]
+name = "continuity-ai"
+version = "0.1.0"
+description = "An evidence-grounded continuity layer for Project Aurora."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "openpyxl>=3.1.5",
+  "icalendar>=6.1.0",
+  "pypdf>=5.0.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[project.scripts]
+continuity-ai = "continuity_ai.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
