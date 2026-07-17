@@ -1,6 +1,8 @@
 # Independent Contract Falsification Prompt
 
-Use this prompt with an independent model before implementation.
+Status: executed once against the combined contract packet. The resulting Fable 5 verdict was `REVISE BEFORE IMPLEMENTATION`; accepted corrections are recorded in `docs/FABLE5_CONTRACT_CORRECTIONS_v0.1.md`.
+
+This file is retained as the audit prompt used for that review. It is not an implementation contract.
 
 ---
 
