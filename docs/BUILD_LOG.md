@@ -105,3 +105,148 @@
 - Verification: local main and origin/main matched at 06de879024066e5af4c1a0ec28900861aeb82587 after merge; git status --short was empty; no files were modified after merge.
 - Gate status: Gate G-02 passed.
 - Next action: Define and freeze Gate G-03 evidence-grounded reasoning contract before implementation. Gate G-03 has not started.
+
+## 2026-07-17 Vertical Skeleton Decision-Provenance and Human-Language Correction
+
+- Context: After first vertical-skeleton implementation commit `e4982f3` and before review or merge, the coordinator identified an implementation-blocking correction.
+- Decision: Add `continuity_break_kind` for G-03 `break_found` analyses, with `propagation_break` for approved decisions that have not propagated and `decision_provenance_not_found` for material changes where no approval, decision, rationale, or linked note is found in the available project sources.
+- Decision: Preserve the Project Aurora scenario as `propagation_break`; do not alter the G-02 `EvidenceRecord` contract or move material-change interpretation into G-02.
+- Decision: Add a normative addendum at `docs/GATE_G03_DECISION_PROVENANCE_AND_HUMAN_LANGUAGE_ADDENDUM_v0.1.md` and make it authoritative over earlier G-03 text where conflicts exist.
+- Decision: Audit public output language so UI-facing messages describe what Continuity AI found or could not find, rather than exposing internal enum values, error codes, raw exception names, object IDs, or tracebacks.
+- Tests: complete offline test suite and whitespace checks are required before committing the correction.
+
+## 2026-07-17 PR #9 Repair Status and Outstanding Blockers
+
+- Status: PR #9 remains open and unmerged.
+- Frozen base: 792c5332b33310eca8e51216605ef9f75b13ead1.
+- Original Codex implementation commit: a88b3f7dbe3fc4dd972cf206d4174078cdb41cf5.
+- Audit: Cursor destructive audit returned BLOCK.
+- Incident: an accidental local Cursor implementation commit 20676de was hard-reset to a88b3f7 before any push; the working tree was clean afterward and no Cursor implementation was retained.
+- Accepted Windows portability repair:
+  - commit 1a2fdc511ddfeb9b68b1dcea2c34c3e977fd10eb
+  - message: Fix Windows vault directory sync
+  - full suite: 63 passed
+- Accepted vault initialization and stable error-contract repair:
+  - commit d8066ae2bc0aeee9df1a2dd2bb1d610c7e0b0929
+  - message: Protect vault initialization and restore error codes
+  - full suite: 68 passed
+- Accepted proposal-session ownership repair:
+  - commit 88268b09161bbdfcc7115ad6ff6417cdd96087ca
+  - message: Bind proposals to active vault sessions
+  - targeted suite: 27 passed
+  - full suite: 78 passed
+- All three repair pushes were normal fast-forwards.
+- No review-export .diff file was committed.
+- These repairs do not close the full Cursor audit.
+- Gate G-03 and PR #9 must not be described as passed or ready to merge yet.
+- Remaining unresolved blocker groups:
+  - bridge commands are still stubs rather than a real vertical flow;
+  - production reasoning still selects the Aurora fake provider;
+  - OpenAI adapter does not yet receive the evidence, spans, prompts, and strict schema required by the contract;
+  - conversation routing and citations remain insufficiently grounded;
+  - analyses, snapshots, and conversation state are not yet persisted end-to-end;
+  - acceptance and end-to-end tests remain inadequate, including network isolation.
+- Coordinator audit classifications:
+  - Cursor N-3 was rejected as a production defect: the universal validator cannot prove semantic correctness; exact Aurora role mapping belongs in tests.
+  - Cursor M-D2 was rejected because the later human-language addendum is authoritative.
+  - B-D1 remains accepted only as structural span validation; deterministic code cannot prove semantic relevance.
+  - Hostile live-model quotation testing, vault rollback, and coarse line spans remain deferred.
+
+## 2026-07-18 PR #9 Real Bridge Vertical Flow
+
+- Accepted commit: 9333d46de42548cb940a5d065eff7c543f9bb1bf.
+- Parent commit: b276807f3cfb4a4d726f24ca059cc3c84b76011e.
+- Commit message: Implement real bridge vertical flow.
+- Push: normal, non-force push to origin codex/implement-vertical-skeleton-from-commit.
+- Changed files: src/continuity_ai/bridge.py, tests/test_vertical_skeleton.py.
+- Stat summary: 645 insertions, 24 deletions.
+- Tests: targeted bridge/vertical-skeleton suite result: 47 passed.
+- Tests: full suite result: 98 passed.
+- Verification: git diff --check produced only the Windows LF-to-CRLF advisory and no conflict-marker or trailing-whitespace error.
+- Verification: the final working tree was clean.
+- Verification: the remote PR head was verified as the accepted commit.
+- Status: PR #9 remains open and unmerged; no merge decision has been made.
+- Repaired: commands delegate to real domain functions; evidence combines project artifacts with confirmed encrypted attestations; citation cards are hydrated from backend-owned records and spans; attestation confirmation triggers evidence refresh and reanalysis; analysis revision confirmation delegates to the real proposal flow; vault replacement, unlock, and project load are atomic at the bridge-state boundary; malformed commands and invalid field types return controlled public errors; lock/unlock removes and restores decrypted attestation evidence correctly; tests cover hostile provider prose and prove it cannot forge citation-card metadata.
+- Remaining unresolved blocker groups:
+  - production provider selection still defaults to the Aurora fake provider;
+  - the OpenAI adapter still does not receive the full evidence, spans, prompts, and strict schema contract;
+  - conversation routing and grounding remain insufficient;
+  - analyses, evidence snapshots, and conversation state are not persisted end-to-end;
+  - acceptance/end-to-end coverage and explicit network isolation remain incomplete.
+
+## 2026-07-18 PR #9 OpenAI Reasoning Provider Contract
+
+- Accepted commit: 9fe669ec447fbed8054dee5806af0da9aa297b0a.
+- Parent commit: a6958dd8f089e7c300458db36bca5deda0cca44a.
+- Commit message: Repair OpenAI reasoning provider contract.
+- Changed files: src/continuity_ai/openai_provider.py, src/continuity_ai/prompts.py, tests/test_vertical_skeleton.py.
+- Stat summary: 726 insertions, 27 deletions.
+- Tests: targeted suite result: 67 passed.
+- Tests: full suite result: 118 passed.
+- Verification: git diff --check passed.
+- Push: normal, non-force push.
+- Verification: the final working tree was clean.
+- Repaired: the provider uses the official OpenAI Python SDK and the Responses API; the API key comes from OPENAI_API_KEY; the model comes from CONTINUITY_OPENAI_MODEL; and the request contains the question, complete evidence records, and deterministic spans under a versioned prompt.
+- Repaired: the request asks for strict JSON Schema output, sets store to false, uses an empty tools list, and does not use streaming, background execution, a previous response, or a conversation chain.
+- Repaired: output_text is parsed; API failures, incomplete responses, refusals, malformed JSON, and non-object JSON fail safely; semantic validation remains owned by run_analysis.
+- Data boundary: URIs, checksums, local paths, citation cards, and provider-owned display metadata are not sent to the model.
+- Live-model status: no successful live OpenAI request was executed or claimed for this accepted commit.
+
+## 2026-07-18 PR #9 Explicit Reasoning-Provider Selection
+
+- Accepted commit: 31775b382e938507cd26ef3ec5d7d4d57c60e573.
+- Parent commit: 9fe669ec447fbed8054dee5806af0da9aa297b0a.
+- Commit message: Make reasoning provider selection explicit.
+- Changed files: src/continuity_ai/bridge.py, src/continuity_ai/provider_selection.py, src/continuity_ai/reasoning.py, tests/test_acceptance_project_promise.py, tests/test_ingestion.py, tests/test_vertical_skeleton.py.
+- Stat summary: 301 insertions, 14 deletions.
+- Tests: focused stale-test regression result: 1 passed.
+- Tests: targeted provider-selection suite result: 81 passed.
+- Tests: full suite result: 131 passed.
+- Verification: git diff --check passed.
+- Push: normal, non-force push.
+- Verification: the final working tree was clean.
+- Repaired: reasoning-provider selection is explicit. CONTINUITY_REASONING_PROVIDER is required when no provider is injected; supported configured values are openai and fake_aurora; surrounding whitespace is ignored; and matching is case-insensitive.
+- Repaired: missing, blank, or unsupported configured values fail safely; there is no implicit fake-provider fallback; an injected provider has precedence; and a falsy injected provider is not silently replaced.
+- Network boundary: provider selection itself does not call the network, and importing the module does not call the network.
+- Integration behavior: Bridge without injection requires explicit configuration, while answer_morning_question uses the shared provider factory when no provider is injected.
+- Provider status: FakeAuroraProvider remains an explicitly selected test/demo provider only. It is not production reasoning and is not evidence of GPT-5.6 operation.
+
+## 2026-07-18 Semantic Project and Decision-Scope Resolution Blocker
+
+- Architectural correction: the existing vertical skeleton analyzes a user-selected, already grouped Project Aurora workspace. It does not yet prove that naturally varied references such as “Project Aurora,” “Aurora,” “Mara’s film,” “the Northlight shoot,” “the production,” or “the current project” resolve to the same canonical project.
+- Decision-scope gap: the existing skeleton does not yet resolve whether a decision about a product family applies to Mobile, Desktop, both variants, the whole family, or remains ambiguous.
+- Blocker status: Semantic Project Resolution and Decision Scope Resolution are blockers of the strong product claim that Continuity AI reconstructs project state from scattered, naturally written artifacts.
+- Layer boundary: the G-02 EvidenceRecord contract remains unchanged. Semantic resolution must be implemented as a layer above G-02.
+- Model responsibility: the model interprets artifact content and cross-document relations.
+- Backend responsibility: the backend owns and restricts candidate project IDs and target IDs, and validates returned IDs, candidate membership, statuses, and deterministic supporting span IDs.
+- Trust boundary: the model may identify naturally written references that are not pre-registered aliases, but it must resolve them only to backend-provided candidate project and target IDs and support the resolution with valid deterministic spans. It must not invent canonical projects, products, target IDs, evidence IDs, spans, or evidence metadata.
+- Ambiguity handling: ambiguity must not become automatic source assignment; ambiguous product-family language must not automatically become global scope or “both”; and unrelated or unresolved sources must not be silently included.
+- Human confirmation: confirmation is required only when semantic analysis still leaves multiple reasonable interpretations. A resolution confirmation maps meaning or scope; it does not automatically become evidence that the underlying decision is true.
+- Live-evaluation boundary: the final live OpenAI evaluation must perform semantic resolution before continuity analysis. No claim may be made that GPT-5.6 currently resolves project aliases or decision scope.
+- Gate status: Gate G-03 remains not passed. PR #9 remains not merge-ready.
+- Strict competition implementation boundary:
+  - one candidate workspace;
+  - one canonical Project Aurora;
+  - naturally varied references to Aurora;
+  - one minimal decoy, unrelated, or ambiguous source;
+  - deterministic supporting span IDs;
+  - backend validation;
+  - no automatic source assignment while ambiguity remains;
+  - one controlled live GPT-5.6 semantic-resolution run followed by continuity analysis;
+  - LynxMask Mobile and Desktop only as a small fixture or contract test for Decision Scope Resolution;
+  - no LynxMask UI integration or production workflow in this package.
+- This annex does not authorize building now:
+  - a universal knowledge graph;
+  - automatic project discovery across the user’s computer;
+  - persistent alias-learning infrastructure;
+  - an arbitrary number of projects;
+  - full persistence of resolution records;
+  - a complete entity-management interface;
+  - a finished production-grade universal resolver.
+- Intended sequence:
+  1. complete this documentation checkpoint;
+  2. create a separate docs-only semantic-resolution contract;
+  3. falsify that contract;
+  4. implement one bounded thin implementation package;
+  5. run one controlled live resolution plus continuity-analysis test;
+  6. wire or capture UI and film only after the backend result is real.

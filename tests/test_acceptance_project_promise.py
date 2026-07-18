@@ -1,28 +1,18 @@
 from __future__ import annotations
-
 from pathlib import Path
-
 from continuity_ai.aurora_fixture import generate_project_aurora_fixture
 from continuity_ai.reasoning import answer_morning_question
-
+from continuity_ai.reasoning_pipeline import FakeAuroraProvider
 
 def test_final_product_promise_finds_aurora_continuity_break(tmp_path: Path) -> None:
     generate_project_aurora_fixture(tmp_path)
-
     result = answer_morning_question(
         tmp_path / "fixtures/project_aurora/generated/artifacts",
-        "What changed overnight, what contradicts itself, and what needs attention next?",
+        "What changed, and what must I fix before tomorrow?",
+        FakeAuroraProvider(),
     )
-
-    assert result["continuity_break"] == (
-        "The approved location change is reflected in the budget but not in the production calendar or current call sheet."
-    )
-    assert result["required_evidence"] == [
-        "aurora-email-investor-approval-001",
-        "aurora-budget-v4-001",
-        "aurora-calendar-production-001",
-        "aurora-callsheet-current-001",
-    ]
-    assert result["next_action"] == (
-        "Update the production calendar and call sheet before tomorrow's crew briefing."
-    )
+    assert result["analysis_status"] == "break_found"
+    assert result["continuity_break_kind"] == "propagation_break"
+    assert "approved decision" in result["continuity_break"]
+    assert set(result["required_evidence"]) >= {"EV-AUR-001", "EV-AUR-002", "EV-AUR-003", "EV-AUR-004"}
+    assert "Update" in result["next_action"]

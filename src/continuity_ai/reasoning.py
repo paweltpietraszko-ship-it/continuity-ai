@@ -1,25 +1,21 @@
-"""Future evidence-grounded reasoning pipeline."""
-
+"""Evidence-grounded reasoning entry point."""
 from __future__ import annotations
-
 from pathlib import Path
-
 from continuity_ai.artifact_io import validate_production_artifact_root
-
-
-class ReasoningPipelineNotImplementedError(NotImplementedError):
-    """Raised until the evidence-grounded reasoning pipeline is implemented."""
-
-
-def answer_morning_question(project_root: Path, question: str) -> dict[str, object]:
-    """Answer the Project Aurora morning question from artifacts.
-
-    The production reasoning pipeline is intentionally not implemented in Gate G-01.
-    It must eventually inspect generated artifacts directly and must not read test-only
-    ground truth data.
-    """
-
+from continuity_ai.ingestion import ingest_artifacts
+from continuity_ai.evidence import artifact_to_reasoning, order_evidence
+from continuity_ai.provider_selection import create_reasoning_provider
+from continuity_ai.reasoning_pipeline import run_analysis
+class ReasoningPipelineNotImplementedError(NotImplementedError): pass
+def answer_morning_question(project_root: Path, question: str, provider=None) -> dict[str, object]:
+    selected_provider = provider if provider is not None else create_reasoning_provider()
     validate_production_artifact_root(project_root)
-    raise ReasoningPipelineNotImplementedError(
-        "Evidence-grounded reasoning pipeline is not implemented yet."
-    )
+    records=order_evidence(tuple(artifact_to_reasoning(r) for r in ingest_artifacts(project_root)))
+    result, spans, snapshot = run_analysis(records, question, selected_provider)
+    required=[]
+    for gs in (result.continuity_break, result.next_action):
+        if gs:
+            for sid in gs.span_ids:
+                eid=sid.split(":",1)[0]
+                if eid not in required: required.append(eid)
+    return {"analysis_status": result.analysis_status, "continuity_break_kind": result.continuity_break_kind, "continuity_break": result.continuity_break.statement if result.continuity_break else None, "required_evidence": required, "next_action": result.next_action.statement if result.next_action else None}
