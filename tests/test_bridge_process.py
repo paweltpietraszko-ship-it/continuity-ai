@@ -83,6 +83,7 @@ def test_process_continues_after_malformed_utf8_then_valid_command() -> None:
             "artifact_evidence_count": 0,
             "evidence_count": 0,
             "has_analysis": False,
+            "retained_analysis_status": "none",
             "pending_attestation_count": 0,
             "pending_revision_count": 0,
         },
