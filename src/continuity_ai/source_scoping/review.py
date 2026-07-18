@@ -1,8 +1,6 @@
 """Human review gate between model scoping and downstream analysis."""
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -14,6 +12,7 @@ from continuity_ai.source_scoping.domain import (
     SCHEMA_VERSION,
     SourceScopingResult,
 )
+from continuity_ai.source_scoping.fingerprints import evidence_fingerprint
 
 _FINAL_STATUSES = frozenset({"included", "excluded"})
 
@@ -22,25 +21,6 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
-
-
-def evidence_fingerprint(record: Any) -> str:
-    """Bind approval to the complete neutral evidence record, not content alone."""
-    payload = {
-        "evidence_id": record.evidence_id,
-        "source_type": record.source_type,
-        "author_or_actor": record.author_or_actor,
-        "timestamp": record.timestamp,
-        "title": record.title,
-        "content": record.content,
-        "provenance": record.provenance,
-        "uri": record.uri,
-        "artifact_sha256": record.artifact_sha256,
-    }
-    serialized = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def approve_source_scope(
