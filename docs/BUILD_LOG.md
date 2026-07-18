@@ -151,3 +151,25 @@
   - Cursor M-D2 was rejected because the later human-language addendum is authoritative.
   - B-D1 remains accepted only as structural span validation; deterministic code cannot prove semantic relevance.
   - Hostile live-model quotation testing, vault rollback, and coarse line spans remain deferred.
+
+## 2026-07-18 PR #9 Real Bridge Vertical Flow
+
+- Accepted commit: 9333d46de42548cb940a5d065eff7c543f9bb1bf.
+- Parent commit: b276807f3cfb4a4d726f24ca059cc3c84b76011e.
+- Commit message: Implement real bridge vertical flow.
+- Push: normal, non-force push to origin codex/implement-vertical-skeleton-from-commit.
+- Changed files: src/continuity_ai/bridge.py, tests/test_vertical_skeleton.py.
+- Stat summary: 645 insertions, 24 deletions.
+- Tests: targeted bridge/vertical-skeleton suite result: 47 passed.
+- Tests: full suite result: 98 passed.
+- Verification: git diff --check produced only the Windows LF-to-CRLF advisory and no conflict-marker or trailing-whitespace error.
+- Verification: the final working tree was clean.
+- Verification: the remote PR head was verified as the accepted commit.
+- Status: PR #9 remains open and unmerged; no merge decision has been made.
+- Repaired: commands delegate to real domain functions; evidence combines project artifacts with confirmed encrypted attestations; citation cards are hydrated from backend-owned records and spans; attestation confirmation triggers evidence refresh and reanalysis; analysis revision confirmation delegates to the real proposal flow; vault replacement, unlock, and project load are atomic at the bridge-state boundary; malformed commands and invalid field types return controlled public errors; lock/unlock removes and restores decrypted attestation evidence correctly; tests cover hostile provider prose and prove it cannot forge citation-card metadata.
+- Remaining unresolved blocker groups:
+  - production provider selection still defaults to the Aurora fake provider;
+  - the OpenAI adapter still does not receive the full evidence, spans, prompts, and strict schema contract;
+  - conversation routing and grounding remain insufficient;
+  - analyses, evidence snapshots, and conversation state are not persisted end-to-end;
+  - acceptance/end-to-end coverage and explicit network isolation remain incomplete.

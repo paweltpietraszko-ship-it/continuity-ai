@@ -29,9 +29,31 @@
 
 ## 2026-07-17 PR #9 Repair Status
 
-- PR #9 is open and unmerged. The latest reviewed code checkpoint is 88268b09161bbdfcc7115ad6ff6417cdd96087ca; later commits on the branch may contain documentation-only updates.
-- The branch contains the original Codex implementation (a88b3f7dbe3fc4dd972cf206d4174078cdb41cf5) plus three reviewed repair commits: Windows vault directory sync, vault initialization protection with restored error codes, and proposal-session ownership binding.
-- Repaired: Windows vault portability (parent-directory fsync no longer fails on platforms without os.O_DIRECTORY), vault initialization protection (rejects an existing target path, empty/whitespace owner name, empty/whitespace password) with restored stable error-contract serialization (code, message, object_id), and proposal session ownership (attestation and analysis-revision proposals are bound to the creating session and invalidated on lock or session replacement).
-- Current verified local full-suite result: 78 passed.
-- The destructive Cursor audit remains BLOCK: the unresolved vertical-flow, provider, grounding, persistence, and end-to-end test blockers remain (see Build Log, 2026-07-17 PR #9 Repair Status and Outstanding Blockers).
-- Next action: a narrowly scoped repair of the real bridge vertical flow. No merge decision has been made.
+- PR #9 remains open and unmerged. The latest reviewed code checkpoint is 9333d46de42548cb940a5d065eff7c543f9bb1bf; later commits on the branch may contain documentation-only updates.
+- The branch contains the original Codex implementation (a88b3f7dbe3fc4dd972cf206d4174078cdb41cf5) plus four reviewed repair commits: Windows vault directory sync, vault initialization protection with restored error codes, proposal-session ownership binding, and the real bridge vertical flow.
+- Accepted bridge vertical-flow repair:
+  - commit 9333d46de42548cb940a5d065eff7c543f9bb1bf
+  - message: Implement real bridge vertical flow
+  - parent: b276807f3cfb4a4d726f24ca059cc3c84b76011e
+  - files: src/continuity_ai/bridge.py, tests/test_vertical_skeleton.py
+  - targeted bridge/vertical-skeleton suite: 47 passed
+  - full suite: 98 passed
+- The real bridge vertical-flow blocker is now repaired:
+  - commands delegate to real domain functions;
+  - evidence combines project artifacts with confirmed encrypted attestations;
+  - citation cards are hydrated from backend-owned records and spans;
+  - attestation confirmation triggers evidence refresh and reanalysis;
+  - analysis revision confirmation delegates to the real proposal flow;
+  - vault replacement, unlock, and project load are atomic at the bridge-state boundary;
+  - malformed commands and invalid field types return controlled public errors;
+  - lock/unlock removes and restores decrypted attestation evidence correctly;
+  - tests cover hostile provider prose and prove it cannot forge citation-card metadata.
+- Do not claim Gate G-03 has passed.
+- Do not claim PR #9 is ready to merge.
+- Remaining unresolved blocker groups:
+  - production provider selection still defaults to the Aurora fake provider;
+  - the OpenAI adapter still does not receive the full evidence, spans, prompts, and strict schema contract;
+  - conversation routing and grounding remain insufficient;
+  - analyses, evidence snapshots, and conversation state are not persisted end-to-end;
+  - acceptance/end-to-end coverage and explicit network isolation remain incomplete.
+- Next action: select and repair one remaining blocker group. No merge decision has been made.
