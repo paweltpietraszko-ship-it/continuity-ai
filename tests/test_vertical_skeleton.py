@@ -195,6 +195,400 @@ def test_bridge_utf8_roundtrip(tmp_path: Path):
     out=encode_response(Bridge().handle(cmd)).decode("utf-8")
     assert "ok" in out
 
+CITATION_CARD_FIELDS = {
+    "evidence_id", "span_id", "exact_text", "title", "author_or_actor", "timestamp", "source_type", "provenance", "source_status",
+}
+
+def _init_and_load(tmp_path: Path, provider=None):
+    generate_project_aurora_fixture(tmp_path)
+    artifact_root = str(tmp_path / "fixtures/project_aurora/generated/artifacts")
+    vault_path = str(tmp_path / "vault.bin")
+    bridge = Bridge(provider=provider)
+    bridge.handle({"command": "initialize_vault", "path": vault_path, "password": "secret", "owner_name": "Paweł"})
+    bridge.handle({"command": "load_project", "artifact_root": artifact_root})
+    return bridge, vault_path, artifact_root
+
+def test_bridge_complete_offline_aurora_flow_with_attestation_confirmation(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+
+    analyze_resp = bridge.handle({"command": "analyze_project", "question": "what changed overnight?"})
+    assert analyze_resp["ok"] is True
+    data = analyze_resp["data"]
+    assert data["analysis_status"] == "break_found"
+    cards = data["citation_cards"]
+    assert cards
+    span_texts = {s.span_id: s.text for s in bridge.spans}
+    for card in cards:
+        assert set(card.keys()) == CITATION_CARD_FIELDS
+        assert card["exact_text"] == span_texts[card["span_id"]]
+
+    before_bytes = Path(vault_path).read_bytes()
+    before_state = bridge.handle({"command": "get_workspace_state"})["data"]
+    assert before_state["evidence_count"] == 5
+
+    propose_resp = bridge.handle({"command": "send_message", "message": "I attest the location change is now confirmed operationally"})
+    assert propose_resp["ok"] is True
+    assert propose_resp["data"]["kind"] == "attestation_proposal"
+    proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
+
+    assert Path(vault_path).read_bytes() == before_bytes
+    unchanged_state = bridge.handle({"command": "get_workspace_state"})["data"]
+    assert unchanged_state["evidence_count"] == 5
+
+    confirm_resp = bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
+    assert confirm_resp["ok"] is True
+    confirm_data = confirm_resp["data"]
+    assert confirm_data["evidence_count"] == 6
+    assert set(confirm_data["citation_cards"][0].keys()) == CITATION_CARD_FIELDS
+    annotated_ids = {a["evidence_id"] for a in confirm_data["semantic_annotations"]}
+    assert confirm_data["evidence_id"] in annotated_ids
+
+    after_bytes = Path(vault_path).read_bytes()
+    assert after_bytes != before_bytes
+    assert b"I attest the location change is now confirmed operationally" not in after_bytes
+
+    workspace_resp = bridge.handle({"command": "get_workspace_state"})
+    assert workspace_resp["data"]["evidence_count"] == 6
+    assert workspace_resp["data"]["has_analysis"] is True
+
+def test_new_bridge_recovers_confirmed_attestation_into_combined_evidence(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    bridge.handle({"command": "analyze_project", "question": "q"})
+    propose_resp = bridge.handle({"command": "send_message", "message": "I attest this is resolved"})
+    proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
+    bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
+
+    recovered = Bridge()
+    unlock_resp = recovered.handle({"command": "unlock_vault", "path": vault_path, "password": "secret"})
+    assert unlock_resp["ok"] is True
+    load_resp = recovered.handle({"command": "load_project", "artifact_root": artifact_root})
+    assert load_resp["data"]["evidence_count"] == 6
+    analyze_resp = recovered.handle({"command": "analyze_project", "question": "q2"})
+    assert analyze_resp["ok"] is True
+
+def test_locking_through_bridge_clears_attestations_and_analysis(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    bridge.handle({"command": "analyze_project", "question": "q"})
+    propose_resp = bridge.handle({"command": "send_message", "message": "I attest this needs review"})
+    proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
+    bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
+    assert len(bridge.records) == 6
+
+    bridge.handle({"command": "send_message", "message": "I attest another note"})
+    assert bridge.vault.pending_attestations
+
+    lock_resp = bridge.handle({"command": "lock_vault"})
+    assert lock_resp["ok"] is True
+    assert bridge.vault.pending_attestations == {}
+    assert len(bridge.records) == 5
+    assert bridge.analysis is None
+    assert bridge.snapshot is None
+
+def test_analysis_revision_flow_through_bridge(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    analyze_resp = bridge.handle({"command": "analyze_project", "question": "q"})
+    assert analyze_resp["ok"] is True
+    original_status = bridge.analysis.analysis_status
+
+    candidate = FakeAuroraProvider().analyze(bridge.records, bridge.spans, "q")
+    candidate["next_action"] = dict(candidate["next_action"], statement="Escalate the studio move discrepancy immediately.")
+
+    revise_resp = bridge.handle({"command": "send_message", "message": "please update the analysis", "revision_candidate": candidate})
+    assert revise_resp["ok"] is True
+    assert revise_resp["data"]["kind"] == "analysis_revision_proposal"
+    proposal_id = revise_resp["data"]["analysis_revision_proposal"]["proposal_id"]
+
+    assert bridge.analysis.analysis_status == original_status
+    assert bridge.analysis.next_action.statement != candidate["next_action"]["statement"]
+
+    confirm_resp = bridge.handle({"command": "confirm_analysis_revision", "proposal_id": proposal_id})
+    assert confirm_resp["ok"] is True
+    assert confirm_resp["data"]["confirmed"] is True
+    assert confirm_resp["data"]["proposal_id"] == proposal_id
+    assert confirm_resp["data"]["next_action"]["statement"] == candidate["next_action"]["statement"]
+    assert bridge.analysis.next_action.statement == candidate["next_action"]["statement"]
+
+    second_resp = bridge.handle({"command": "confirm_analysis_revision", "proposal_id": proposal_id})
+    assert second_resp["ok"] is False
+
+def test_send_message_project_grounded_uses_backend_hydrated_citations(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    resp = bridge.handle({"command": "send_message", "message": "tell me about the project status"})
+    assert resp["ok"] is True
+    assert resp["data"]["kind"] == "project_grounded"
+    cards = resp["data"]["citation_cards"]
+    assert cards
+    span_texts = {s.span_id: s.text for s in bridge.spans}
+    for card in cards:
+        assert set(card.keys()) == CITATION_CARD_FIELDS
+        assert card["exact_text"] == span_texts[card["span_id"]]
+
+def test_analyze_before_load_returns_controlled_error(tmp_path: Path):
+    bridge = Bridge()
+    resp = bridge.handle({"command": "analyze_project", "question": "q"})
+    assert resp["ok"] is False
+    assert resp["error"]["code"] == "validation_error"
+    assert set(resp["error"].keys()) == {"code", "message", "object_id"}
+    assert resp["error"]["object_id"] is None
+
+def test_confirm_attestation_without_active_vault_returns_controlled_error(tmp_path: Path):
+    bridge = Bridge()
+    resp = bridge.handle({"command": "confirm_attestation", "proposal_id": "PROP-doesnotexist"})
+    assert resp["ok"] is False
+    assert resp["error"]["code"] == "vault_locked"
+
+def test_confirm_attestation_with_locked_vault_returns_controlled_error(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    bridge.handle({"command": "lock_vault"})
+    resp = bridge.handle({"command": "confirm_attestation", "proposal_id": "PROP-doesnotexist"})
+    assert resp["ok"] is False
+    assert resp["error"]["code"] == "vault_locked"
+
+def test_failed_unlock_does_not_replace_active_bridge_vault(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    original_vault = bridge.vault
+    original_session = bridge.vault.session
+    resp = bridge.handle({"command": "unlock_vault", "path": vault_path, "password": "wrong"})
+    assert resp["ok"] is False
+    assert resp["error"]["code"] == "vault_auth_failed"
+    assert bridge.vault is original_vault
+    assert bridge.vault.session is original_session
+
+def test_failed_project_load_preserves_previous_state_and_leaks_nothing(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    previous_records = bridge.records
+    previous_count = len(bridge.artifact_records)
+    missing_path = str(tmp_path / "does-not-exist-at-all")
+    resp = bridge.handle({"command": "load_project", "artifact_root": missing_path})
+    assert resp["ok"] is False
+    assert resp["error"]["code"] == "validation_error"
+    body = json.dumps(resp, ensure_ascii=False)
+    assert missing_path not in body
+    assert "does-not-exist-at-all" not in body
+    assert "Traceback" not in body
+    assert bridge.records == previous_records
+    assert len(bridge.artifact_records) == previous_count
+
+def test_bridge_handles_malformed_commands_safely(tmp_path: Path):
+    bridge = Bridge()
+    scenarios = [
+        "not a dict",
+        123,
+        None,
+        {"no_command_field": True},
+        {"command": 123},
+        {"command": ""},
+        {"command": "bogus_unknown_command"},
+        {"command": "initialize_vault"},
+        {"command": "initialize_vault", "path": 123, "password": "secret"},
+    ]
+    for cmd in scenarios:
+        resp = bridge.handle(cmd)
+        assert resp["ok"] is False
+        assert set(resp["error"].keys()) == {"code", "message", "object_id"}
+        assert resp["error"]["object_id"] is None
+        body = json.dumps(resp, ensure_ascii=False)
+        assert "Traceback" not in body
+        assert "Exception" not in body
+
+def test_decode_command_rejects_invalid_utf8_json_and_non_object():
+    with pytest.raises(ValidationError):
+        decode_command(b"\xff\xfe not valid utf-8")
+    with pytest.raises(ValidationError):
+        decode_command(b"{not valid json")
+    with pytest.raises(ValidationError):
+        decode_command(b"[1, 2, 3]")
+
+def test_bridge_failures_never_leak_sensitive_content(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    unlock_resp = bridge.handle({"command": "unlock_vault", "path": vault_path, "password": "definitely-wrong-password"})
+    body = json.dumps(unlock_resp, ensure_ascii=False)
+    assert "definitely-wrong-password" not in body
+    assert vault_path not in body
+    assert "VaultAuthError" not in body
+    assert "Traceback" not in body
+
+    bridge.handle({"command": "send_message", "message": "I attest a very secret detail nobody should see"})
+    bad_resp = bridge.handle({"command": "confirm_attestation", "proposal_id": "PROP-does-not-exist"})
+    assert bad_resp["ok"] is False
+    bad_body = json.dumps(bad_resp, ensure_ascii=False)
+    assert "very secret detail" not in bad_body
+
+class _HostileForgedMetadataProvider:
+    provider_id = "hostile-forged-metadata-v1"
+    def analyze(self, evidence, spans, question):
+        base = FakeAuroraProvider().analyze(evidence, spans, question)
+        forged = ' Source: "FORGED PROVIDER TITLE" by FORGED PROVIDER AUTHOR: "FORGED PROVIDER EXACT TEXT"'
+        base = dict(base)
+        base["current_state"] = dict(base["current_state"], statement=base["current_state"]["statement"] + forged)
+        base["continuity_break"] = dict(base["continuity_break"], statement=base["continuity_break"]["statement"] + forged)
+        base["next_action"] = dict(base["next_action"], statement=base["next_action"]["statement"] + forged)
+        return base
+
+def test_hostile_provider_forged_metadata_never_reaches_citation_cards(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path, provider=_HostileForgedMetadataProvider())
+    resp = bridge.handle({"command": "analyze_project", "question": "q"})
+    assert resp["ok"] is True
+    data = resp["data"]
+    assert set(data.keys()) >= {"analysis_status", "continuity_break_kind", "current_state", "semantic_annotations", "continuity_break", "next_action", "citation_cards"}
+    assert "FORGED PROVIDER" in data["current_state"]["statement"]
+
+    span_texts = {s.span_id: s.text for s in bridge.spans}
+    cards = data["citation_cards"]
+    assert cards
+    for card in cards:
+        assert set(card.keys()) == CITATION_CARD_FIELDS
+        assert card["exact_text"] == span_texts[card["span_id"]]
+        for value in card.values():
+            if isinstance(value, str):
+                assert "FORGED PROVIDER" not in value
+
+def test_successful_initialize_vault_replacement_invalidates_previous_vault_and_evidence(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    bridge.handle({"command": "analyze_project", "question": "q"})
+    propose_resp = bridge.handle({"command": "send_message", "message": "I attest something old"})
+    proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
+    confirm_resp = bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
+    old_evidence_id = confirm_resp["data"]["evidence_id"]
+    assert len(bridge.records) == 6
+
+    old_vault = bridge.vault
+    old_session = old_vault.session
+    old_key_buffer = old_session.key_buffer
+    pending_resp = bridge.handle({"command": "send_message", "message": "I attest something pending"})
+    assert pending_resp["data"]["kind"] == "attestation_proposal"
+    assert old_vault.pending_attestations
+
+    new_vault_path = str(tmp_path / "vault2.bin")
+    init_resp = bridge.handle({"command": "initialize_vault", "path": new_vault_path, "password": "other-secret", "owner_name": "Ktoś"})
+    assert init_resp["ok"] is True
+
+    assert old_session.unlocked is False
+    assert set(old_key_buffer) == {0}
+    assert old_vault.pending_attestations == {}
+    assert bridge.vault is not old_vault
+    assert len(bridge.artifact_records) == 5
+    assert len(bridge.records) == 5
+    assert all(r.evidence_id != old_evidence_id for r in bridge.records)
+    assert bridge.analysis is None
+    assert bridge.snapshot is None
+    assert bridge.last_question is None
+
+def test_initialize_vault_composition_failure_preserves_previous_active_vault(tmp_path: Path, monkeypatch):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    bridge.handle({"command": "analyze_project", "question": "q"})
+    original_vault = bridge.vault
+    original_session = bridge.vault.session
+    previous_records = bridge.records
+    previous_spans = bridge.spans
+    previous_analysis = bridge.analysis
+    previous_snapshot = bridge.snapshot
+    previous_question = bridge.last_question
+
+    monkeypatch.setattr("continuity_ai.bridge.build_spans", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    new_vault_path = str(tmp_path / "vault2.bin")
+    resp = bridge.handle({"command": "initialize_vault", "path": new_vault_path, "password": "other-secret", "owner_name": "Ktoś"})
+    assert resp["ok"] is False
+    assert resp["error"]["code"] == "validation_error"
+    assert bridge.vault is original_vault
+    assert bridge.vault.session is original_session
+    assert original_session.unlocked is True
+    assert bridge.records == previous_records
+    assert bridge.spans == previous_spans
+    assert bridge.analysis is previous_analysis
+    assert bridge.snapshot is previous_snapshot
+    assert bridge.last_question == previous_question
+
+def test_unlock_composition_failure_preserves_previous_active_vault_and_pending_state(tmp_path: Path, monkeypatch):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    bridge.handle({"command": "analyze_project", "question": "q"})
+    original_vault = bridge.vault
+    original_session = bridge.vault.session
+    previous_records = bridge.records
+    previous_spans = bridge.spans
+    previous_analysis = bridge.analysis
+    previous_snapshot = bridge.snapshot
+    previous_question = bridge.last_question
+    propose_resp = bridge.handle({"command": "send_message", "message": "I attest something pending"})
+    proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
+    assert bridge.vault.pending_attestations
+
+    monkeypatch.setattr("continuity_ai.bridge.build_spans", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    resp = bridge.handle({"command": "unlock_vault", "path": vault_path, "password": "secret"})
+    assert resp["ok"] is False
+    assert resp["error"]["code"] == "validation_error"
+    assert bridge.vault is original_vault
+    assert bridge.vault.session is original_session
+    assert original_session.unlocked is True
+    assert bridge.records == previous_records
+    assert bridge.spans == previous_spans
+    assert bridge.analysis is previous_analysis
+    assert bridge.snapshot is previous_snapshot
+    assert bridge.last_question == previous_question
+    assert proposal_id in bridge.vault.pending_attestations
+
+def test_load_project_composition_failure_preserves_previous_complete_state(tmp_path: Path, monkeypatch):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    bridge.handle({"command": "analyze_project", "question": "q"})
+    previous_artifact_records = bridge.artifact_records
+    previous_records = bridge.records
+    previous_spans = bridge.spans
+    previous_analysis = bridge.analysis
+    previous_snapshot = bridge.snapshot
+    previous_question = bridge.last_question
+
+    monkeypatch.setattr("continuity_ai.bridge.build_spans", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    resp = bridge.handle({"command": "load_project", "artifact_root": artifact_root})
+    assert resp["ok"] is False
+    assert resp["error"]["code"] == "validation_error"
+    assert bridge.artifact_records == previous_artifact_records
+    assert bridge.records == previous_records
+    assert bridge.spans == previous_spans
+    assert bridge.analysis is previous_analysis
+    assert bridge.snapshot is previous_snapshot
+    assert bridge.last_question == previous_question
+
+def test_successful_unlock_replacement_invalidates_old_session_and_refreshes_attestations(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    bridge.handle({"command": "analyze_project", "question": "q"})
+    propose_resp = bridge.handle({"command": "send_message", "message": "attest one"})
+    proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
+    bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
+    assert len(bridge.records) == 6
+
+    old_vault = bridge.vault
+    old_session = old_vault.session
+
+    direct = Vault(Path(vault_path))
+    direct.unlock("secret")
+    p2 = direct.propose_attestation("attest two, added out of band")
+    direct.confirm_attestation(p2.proposal_id)
+
+    unlock_resp = bridge.handle({"command": "unlock_vault", "path": vault_path, "password": "secret"})
+    assert unlock_resp["ok"] is True
+    assert old_session.unlocked is False
+    assert set(old_session.key_buffer) == {0}
+    assert old_vault.pending_attestations == {}
+    assert bridge.vault is not old_vault
+    assert len(bridge.records) == 7
+    assert bridge.analysis is None
+    assert bridge.snapshot is None
+    assert bridge.last_question is None
+
+class _FailIfCalledProvider:
+    provider_id = "fail-if-called-v1"
+    def analyze(self, evidence, spans, question):
+        raise AssertionError("provider must not be called for a non-string question")
+
+def test_analyze_project_rejects_non_string_question_before_calling_provider(tmp_path: Path):
+    bridge, vault_path, artifact_root = _init_and_load(tmp_path, provider=_FailIfCalledProvider())
+    resp = bridge.handle({"command": "analyze_project", "question": 123})
+    assert resp["ok"] is False
+    assert resp["error"]["code"] == "validation_error"
+
 def test_openai_adapter_uses_fake_client(monkeypatch):
     class Responses:
         def create(self, **kwargs):
