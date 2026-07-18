@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -23,8 +24,23 @@ def _utc_now() -> str:
     )
 
 
-def _content_fingerprint(record: Any) -> str:
-    return hashlib.sha256(record.content.encode("utf-8")).hexdigest()
+def evidence_fingerprint(record: Any) -> str:
+    """Bind approval to the complete neutral evidence record, not content alone."""
+    payload = {
+        "evidence_id": record.evidence_id,
+        "source_type": record.source_type,
+        "author_or_actor": record.author_or_actor,
+        "timestamp": record.timestamp,
+        "title": record.title,
+        "content": record.content,
+        "provenance": record.provenance,
+        "uri": record.uri,
+        "artifact_sha256": record.artifact_sha256,
+    }
+    serialized = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def approve_source_scope(
@@ -32,7 +48,7 @@ def approve_source_scope(
     evidence: tuple[Any, ...],
     overrides: Mapping[str, str],
 ) -> ApprovedSourceScope:
-    """Apply explicit human corrections and require every ambiguous record to be resolved."""
+    """Apply human corrections and require every ambiguous record to be resolved."""
     if not isinstance(overrides, Mapping):
         raise ValidationError()
     decisions = {decision.evidence_id: decision for decision in result.decisions}
@@ -68,8 +84,12 @@ def approve_source_scope(
         reviewed.append(
             ReviewedSourceDecision(
                 evidence_id=decision.evidence_id,
-                final_status=final_status,
                 model_status=decision.association_status,
+                model_basis=decision.basis,
+                model_rationale=decision.rationale,
+                span_ids=decision.span_ids,
+                related_evidence_ids=decision.related_evidence_ids,
+                final_status=final_status,
                 user_overridden=user_overridden,
             )
         )
@@ -86,7 +106,7 @@ def approve_source_scope(
         excluded_evidence_ids=tuple(excluded),
         user_resolved_evidence_ids=tuple(resolved),
         evidence_fingerprints=tuple(
-            (record.evidence_id, _content_fingerprint(record)) for record in evidence
+            (record.evidence_id, evidence_fingerprint(record)) for record in evidence
         ),
         created_at=_utc_now(),
     )
@@ -98,7 +118,7 @@ def select_approved_evidence(
 ) -> tuple[Any, ...]:
     """Return approved records only when the reviewed snapshot still matches."""
     live_fingerprints = tuple(
-        (record.evidence_id, _content_fingerprint(record)) for record in evidence
+        (record.evidence_id, evidence_fingerprint(record)) for record in evidence
     )
     if live_fingerprints != scope.evidence_fingerprints:
         raise ValidationError()
