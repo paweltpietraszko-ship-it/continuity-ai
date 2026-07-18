@@ -51,8 +51,12 @@ class SourceScopingResult:
 @dataclass(frozen=True)
 class ReviewedSourceDecision:
     evidence_id: str
-    final_status: FinalAssociationStatus
     model_status: AssociationStatus
+    model_basis: DecisionBasis
+    model_rationale: str
+    span_ids: tuple[str, ...]
+    related_evidence_ids: tuple[str, ...]
+    final_status: FinalAssociationStatus
     user_overridden: bool
 
 
