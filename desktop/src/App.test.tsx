@@ -2,7 +2,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { App } from "./App";
+import { App, AppRoot } from "./App";
+import type { BridgeBootstrapState } from "./bridge/bootstrap";
 import type { WorkspaceState } from "./bridge/contracts";
 
 const EMPTY_WORKSPACE_STATE: WorkspaceState = {
@@ -157,5 +158,33 @@ describe("Continuity AI desktop shell", () => {
     await user.click(screen.getByRole("button", { name: "Ask Continuity" }));
 
     expect(screen.queryByRole("heading", { name: "Pending attestation" })).not.toBeInTheDocument();
+  });
+});
+
+describe("AppRoot", () => {
+  it("renders the demo shell in a connecting state immediately, before the bootstrap promise resolves", () => {
+    const neverResolves = new Promise<BridgeBootstrapState>(() => {});
+    render(<AppRoot bootstrapPromise={neverResolves} />);
+
+    expect(screen.getByText("Connecting local Bridge…")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Project Aurora", level: 1 })).toBeInTheDocument();
+  });
+
+  it("updates to connected once the bootstrap promise resolves", async () => {
+    const promise = Promise.resolve<BridgeBootstrapState>({
+      mode: "connected",
+      processId: 10,
+      workspaceState: EMPTY_WORKSPACE_STATE,
+    });
+    render(<AppRoot bootstrapPromise={promise} />);
+
+    expect(await screen.findByText("Local Bridge connected")).toBeInTheDocument();
+  });
+
+  it("falls back to unavailable if the bootstrap promise unexpectedly rejects", async () => {
+    const promise = Promise.reject(new Error("unexpected bootstrap failure"));
+    render(<AppRoot bootstrapPromise={promise} />);
+
+    expect(await screen.findByText("Local Bridge unavailable · Demonstration mode")).toBeInTheDocument();
   });
 });

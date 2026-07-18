@@ -1,8 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
-import { App } from "./App";
-import { bootstrapBridge, type BridgeBootstrapState } from "./bridge/bootstrap";
+import { AppRoot } from "./App";
+import { bootstrapBridge } from "./bridge/bootstrap";
 import "./styles/app.css";
 
 const rootElement = document.getElementById("root");
@@ -11,14 +11,15 @@ if (rootElement === null) {
   throw new Error("Continuity AI root element is missing.");
 }
 
-const reactRoot = ReactDOM.createRoot(rootElement);
+// Created once, at true module scope — never inside a component or effect —
+// so React.StrictMode's double-invoked effects cannot start the Bridge
+// twice. The React shell mounts immediately in AppRoot's "connecting" state
+// and updates once this promise settles; it never waits for the Python
+// process before rendering.
+const bootstrapPromise = bootstrapBridge();
 
-// Runs once, outside the React tree, before the first render — React.StrictMode
-// double-invokes effects, so Bridge start/stop must not live in a component effect.
-bootstrapBridge().then((bootstrap: BridgeBootstrapState) => {
-  reactRoot.render(
-    <React.StrictMode>
-      <App bootstrap={bootstrap} />
-    </React.StrictMode>,
-  );
-});
+ReactDOM.createRoot(rootElement).render(
+  <React.StrictMode>
+    <AppRoot bootstrapPromise={bootstrapPromise} />
+  </React.StrictMode>,
+);

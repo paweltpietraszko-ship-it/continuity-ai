@@ -4,6 +4,9 @@ import { continuitySession } from "./session";
 
 export type BridgeBootstrapState =
   | {
+      readonly mode: "connecting";
+    }
+  | {
       readonly mode: "connected";
       readonly processId: number | null;
       readonly workspaceState: WorkspaceState;
@@ -24,19 +27,18 @@ export interface BridgeBootstrapDeps {
 
 const UNAVAILABLE_MESSAGE = "Local Bridge unavailable";
 
+// Bounds the whole bootstrap, including a Rust-side handshake that never
+// responds. Fail-closed: past this point the UI shows the demonstration
+// fallback rather than staying on "connecting" forever.
+export const BOOTSTRAP_TIMEOUT_MS = 8000;
+
 const defaultDeps: BridgeBootstrapDeps = {
   isTauriRuntime,
   start: () => desktopBridge.start(),
   workspaceState: () => continuitySession.workspaceState(),
 };
 
-export async function bootstrapBridge(
-  deps: BridgeBootstrapDeps = defaultDeps,
-): Promise<BridgeBootstrapState> {
-  if (!deps.isTauriRuntime()) {
-    return { mode: "browser_demo" };
-  }
-
+async function connect(deps: BridgeBootstrapDeps): Promise<BridgeBootstrapState> {
   try {
     const status = await deps.start();
     const workspaceState = await deps.workspaceState();
@@ -46,8 +48,42 @@ export async function bootstrapBridge(
   }
 }
 
+function withTimeout(
+  promise: Promise<BridgeBootstrapState>,
+  timeoutMs: number,
+): Promise<BridgeBootstrapState> {
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ mode: "unavailable", message: UNAVAILABLE_MESSAGE });
+    }, timeoutMs);
+
+    promise.then((result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
+export async function bootstrapBridge(
+  deps: BridgeBootstrapDeps = defaultDeps,
+): Promise<BridgeBootstrapState> {
+  if (!deps.isTauriRuntime()) {
+    return { mode: "browser_demo" };
+  }
+
+  return withTimeout(connect(deps), BOOTSTRAP_TIMEOUT_MS);
+}
+
 export function bridgeStatusLabel(state: BridgeBootstrapState): string {
   switch (state.mode) {
+    case "connecting":
+      return "Connecting local Bridge…";
     case "connected":
       return "Local Bridge connected";
     case "unavailable":

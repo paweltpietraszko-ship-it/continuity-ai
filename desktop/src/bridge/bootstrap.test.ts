@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { WorkspaceState } from "./contracts";
-import { bootstrapBridge, bridgeStatusLabel } from "./bootstrap";
+import type { BridgeStatus, WorkspaceState } from "./contracts";
+import { BOOTSTRAP_TIMEOUT_MS, bootstrapBridge, bridgeStatusLabel } from "./bootstrap";
 
 const WORKSPACE_STATE: WorkspaceState = {
   vault_unlocked: false,
@@ -79,6 +79,63 @@ describe("bootstrapBridge", () => {
 
     expect(result.mode).toBe("unavailable");
     expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  describe("with a hung Bridge process", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("resolves to unavailable after the fail-closed timeout when nothing ever responds", async () => {
+      const start = vi.fn(() => new Promise<BridgeStatus>(() => {}));
+      const workspaceState = vi.fn();
+
+      const resultPromise = bootstrapBridge({ isTauriRuntime: () => true, start, workspaceState });
+      await vi.advanceTimersByTimeAsync(BOOTSTRAP_TIMEOUT_MS);
+
+      expect(await resultPromise).toEqual({
+        mode: "unavailable",
+        message: "Local Bridge unavailable",
+      });
+    });
+
+    it("does not leak error content into the timeout message", async () => {
+      const start = vi.fn(() => new Promise<BridgeStatus>(() => {}));
+      const workspaceState = vi.fn();
+
+      const resultPromise = bootstrapBridge({ isTauriRuntime: () => true, start, workspaceState });
+      await vi.advanceTimersByTimeAsync(BOOTSTRAP_TIMEOUT_MS);
+      const result = await resultPromise;
+
+      expect(result.mode).toBe("unavailable");
+      if (result.mode === "unavailable") {
+        expect(result.message).not.toMatch(/python|enoent|secret|path|pid|stderr|\d{2,}/i);
+      }
+    });
+
+    it("ignores a late resolution that arrives after the timeout already fired", async () => {
+      let resolveStart: ((status: BridgeStatus) => void) | undefined;
+      const start = vi.fn(
+        () =>
+          new Promise<BridgeStatus>((resolve) => {
+            resolveStart = resolve;
+          }),
+      );
+      const workspaceState = vi.fn().mockResolvedValue({} as WorkspaceState);
+
+      const resultPromise = bootstrapBridge({ isTauriRuntime: () => true, start, workspaceState });
+      await vi.advanceTimersByTimeAsync(BOOTSTRAP_TIMEOUT_MS);
+      const result = await resultPromise;
+
+      // Resolving the underlying call after the fact must not throw or
+      // change an already-settled bootstrap result.
+      resolveStart?.({ running: true, process_id: 1 });
+      expect(result.mode).toBe("unavailable");
+    });
   });
 });
 

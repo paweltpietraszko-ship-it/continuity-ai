@@ -43,6 +43,23 @@ Still demonstration-only, unchanged in scope:
 - Project Report rendering (`App.tsx` still renders only `src/data/demoWorkspace.ts`; the schema `3.0` adapter is not imported by `App.tsx`);
 - vault UI workflow, owner identity, conversation, and attestations — local React simulation, with copy corrected so no message claims a backend performed or persisted an operation.
 
+## Bounded correction after the Cursor retest
+
+The retest found that React only mounted after `bootstrapBridge()` resolved, so a hung `bridge_start`/`get_workspace_state` left the user staring at an empty window indefinitely, and that a TypeScript-only `Promise.race` would not help because a blocking Rust read could still leave the process and the `BridgeManager` mutex stuck.
+
+Implemented and runtime active as of this correction:
+
+- the UI renders the demo shell immediately — `AppRoot` (`src/App.tsx`) mounts synchronously in a `connecting` state and only updates once the bootstrap promise settles; it never waits for the Python process before the first paint;
+- the bootstrap promise is still created exactly once, at module scope in `main.tsx`, outside any component or effect — `React.StrictMode` re-mounting `AppRoot` only re-subscribes to that same promise, it cannot start the Bridge twice;
+- an 8-second fail-closed timeout on the whole TypeScript bootstrap (`BOOTSTRAP_TIMEOUT_MS` in `src/bridge/bootstrap.ts`) — past that point the UI switches itself to `Local Bridge unavailable · Demonstration mode` with a fixed, generic message (no path, stderr, exception text, PID, or secret), and the timer is cleared on normal completion;
+- a matching bounded timeout on the Rust side (`BRIDGE_RESPONSE_TIMEOUT`, 8 seconds, `src-tauri/src/bridge/process.rs`) around every blocking Bridge response read, including the handshake performed inside `spawn`: the read runs on a dedicated thread joined via `recv_timeout`; on timeout the hung Python process is killed, stdin is closed, the abandoned reader is left for the (now unblocked) background thread to drop on its own, and a generic `bridge_timeout` `DesktopError` is returned;
+- `BridgeManager` removes a timed-out process from its state, so `status()` reports `running: false` afterward, and `stop()` remains idempotent in that state;
+- because no Bridge operation can hold the `BridgeManager` mutex longer than `BRIDGE_RESPONSE_TIMEOUT`, `RunEvent::Exit`'s call into `BridgeManager::stop()` is transitively bounded by the same 8-second ceiling, even if it fires mid-request — no separate shutdown-specific timeout was needed.
+
+Still demonstration-only, unchanged in scope:
+
+- Project Report rendering, vault UI workflow, owner identity, conversation, and attestations remain exactly as described above — this correction only changes bootstrap timing/timeout behavior, not what is real vs. simulated.
+
 ## Additional Project Report v3 preparation audit
 
 The runtime report is intentionally not enabled yet. Also verify:

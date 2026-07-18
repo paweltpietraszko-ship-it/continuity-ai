@@ -68,6 +68,13 @@ impl DesktopError {
         )
     }
 
+    pub const fn bridge_timeout() -> Self {
+        Self::new(
+            "bridge_timeout",
+            "The local analysis process did not respond in time.",
+        )
+    }
+
     pub const fn backend_root_not_found() -> Self {
         Self::new(
             "backend_root_not_found",
