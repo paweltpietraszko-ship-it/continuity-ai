@@ -7,6 +7,13 @@ class AnalysisProvider:
     provider_id = "unused"
 
 
+class LockableVault:
+    payload = {"attestations": []}
+
+    def lock(self):
+        self.locked = True
+
+
 def _bridge(workspace):
     target, records, _ = workspace
     bridge = Bridge(
@@ -19,6 +26,20 @@ def _bridge(workspace):
     bridge.records = records
     bridge.spans = build_spans(records)
     return bridge
+
+
+def _scope_and_confirm(bridge):
+    scoped = bridge.handle({"command": "scope_project_sources"})
+    ambiguous = scoped["data"]["source_scope"]["ambiguous_evidence_ids"]
+    confirmed = bridge.handle(
+        {
+            "command": "confirm_source_scope",
+            "overrides": {
+                evidence_id: "excluded" for evidence_id in ambiguous
+            },
+        }
+    )
+    return scoped, confirmed
 
 
 def test_bridge_scope_review_gate_and_handoff(workspace):
@@ -44,6 +65,28 @@ def test_bridge_scope_review_gate_and_handoff(workspace):
     assert confirmed["ok"] is True
     approved = confirmed["data"]["approved_source_scope"]["approved_evidence_ids"]
     assert tuple(record.evidence_id for record in bridge.records) == tuple(approved)
+
+
+def test_vault_lock_blocks_analysis_and_project_conversation(workspace):
+    bridge = _bridge(workspace)
+    _, confirmed = _scope_and_confirm(bridge)
+    assert confirmed["ok"] is True
+    bridge.vault = LockableVault()
+
+    locked = bridge.handle({"command": "lock_vault"})
+    assert locked["ok"] is True
+    assert bridge.records == ()
+
+    analyze = bridge.handle(
+        {"command": "analyze_project", "question": "Current state?"}
+    )
+    message = bridge.handle(
+        {"command": "send_message", "message": "What is current?"}
+    )
+    assert analyze["ok"] is False
+    assert analyze["error"]["code"] == "validation_error"
+    assert message["ok"] is False
+    assert message["error"]["code"] == "validation_error"
 
 
 def test_bridge_rejects_target_project_substitution(workspace):
@@ -105,6 +148,7 @@ def test_invalid_restored_scope_clears_visible_retained_analysis(
 
     assert response["ok"] is True
     assert bridge.source_scoping.status == "invalid"
+    assert bridge.records == ()
     assert bridge.analysis is None
     assert bridge.snapshot is None
     assert bridge.last_question is None
