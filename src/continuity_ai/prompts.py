@@ -30,7 +30,7 @@ The evidence world is closed. When decision provenance is missing, say that we c
 
 Return exactly one semantic annotation for every supplied evidence item. Do not produce quotations. Do not produce citation cards, source labels, URIs, checksums, file paths, display-source metadata, provider metadata, or model-owned provenance. Refer only to supplied evidence IDs and span IDs in the schema fields intended for them. Never claim an action was executed. Do not expose chain-of-thought, hidden reasoning, or internal deliberation.
 
-The project report summarizes the whole project and covers exactly these seven sections, in exactly this order, each appearing exactly once: decision, budget, schedule, operations, readiness, casting, agreements. Each section has a status of confirmed, attention, evidence_gap, or not_applicable. Use evidence_gap only when no supplied evidence establishes that section's current status; an evidence_gap section must have an empty span list, the fixed headline "No verified status available", and the fixed statement "No available project source establishes the current <section> status." with the literal section name substituted. Every confirmed, attention, or not_applicable section must cite at least one supplied span ID. When analysis_status is break_found, at least one section must have status attention, and at least one attention section must share a span ID with the continuity break. When analysis_status is no_material_break_found, no section may have status attention. The project report summary must have a non-empty statement grounded in at least one supplied span ID.
+The project report summarizes the whole project and covers exactly these seven sections, identified by their key field, in exactly this order, each appearing exactly once: decision, budget, schedule, operations, readiness, casting, agreements. Each section has a status of confirmed, attention, evidence_gap, or not_applicable. Use evidence_gap only when no supplied evidence establishes that section's current status; an evidence_gap section must have an empty span list, the fixed headline "No verified status available", and the fixed detail "No available project source establishes the current <key> status." with the literal section key substituted. Every confirmed, attention, or not_applicable section must cite at least one supplied span ID, and a section's span_ids must never repeat the same span ID twice. Every grounded statement's span_ids (current_state, continuity_break, next_action, and the project report summary) must likewise never repeat the same span ID twice. When analysis_status is break_found, at least one section must have status attention, and at least one attention section must share a span ID with the continuity break. When analysis_status is no_material_break_found, no section may have status attention. The project report summary must have a non-empty statement grounded in at least one supplied span ID.
 
 Return only JSON that obeys the strict response schema exactly, including every required field, enum, and nullability rule. Use null for continuity_break_kind, continuity_break, and next_action only when analysis_status is no_material_break_found; otherwise supply the supported break kind and grounded statements.''',
     'g03_conversation_v1': 'General conversation is allowed. Project claims require supplied spans or source cards created by Continuity AI. Do not claim actions executed or mutations confirmed.',
@@ -78,19 +78,19 @@ _PROJECT_REPORT_SECTION_SCHEMA: dict[str, Any] = {
     'type': 'object',
     'additionalProperties': False,
     'properties': {
-        'section': {'type': 'string', 'enum': list(_PROJECT_REPORT_SECTION_NAMES)},
+        'key': {'type': 'string', 'enum': list(_PROJECT_REPORT_SECTION_NAMES)},
         'status': {
             'type': 'string',
             'enum': ['confirmed', 'attention', 'evidence_gap', 'not_applicable'],
         },
         'headline': {'type': 'string', 'minLength': 1},
-        'statement': {'type': 'string', 'minLength': 1},
+        'detail': {'type': 'string', 'minLength': 1},
         'span_ids': {
             'type': 'array',
             'items': {'type': 'string', 'minLength': 1},
         },
     },
-    'required': ['section', 'status', 'headline', 'statement', 'span_ids'],
+    'required': ['key', 'status', 'headline', 'detail', 'span_ids'],
 }
 
 _PROJECT_REPORT_SCHEMA: dict[str, Any] = {

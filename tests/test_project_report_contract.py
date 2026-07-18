@@ -20,12 +20,12 @@ def _world():
     return records, build_spans(records)
 
 
-def _evidence_gap(section: str) -> dict:
+def _evidence_gap(key: str) -> dict:
     return {
-        "section": section,
+        "key": key,
         "status": "evidence_gap",
         "headline": "No verified status available",
-        "statement": f"No available project source establishes the current {section} status.",
+        "detail": f"No available project source establishes the current {key} status.",
         "span_ids": [],
     }
 
@@ -34,10 +34,10 @@ def _candidate(records, spans, attention: bool = True) -> dict:
     span_a, span_b = spans[0].span_id, spans[1].span_id
     sections = [
         {
-            "section": "decision",
+            "key": "decision",
             "status": "attention" if attention else "confirmed",
             "headline": "Needs review" if attention else "Confirmed",
-            "statement": "The approved change has not fully propagated." if attention else "The decision is confirmed.",
+            "detail": "The approved change has not fully propagated." if attention else "The decision is confirmed.",
             "span_ids": [span_a, span_b],
         },
         *[_evidence_gap(name) for name in SECTION_NAMES[1:]],
@@ -63,7 +63,7 @@ def _candidate(records, spans, attention: bool = True) -> dict:
 def test_valid_break_found_report_has_seven_sections_in_exact_order():
     records, spans = _world()
     result = validate_analysis(_candidate(records, spans, attention=True), records, spans)
-    assert [s.section for s in result.project_report.sections] == list(SECTION_NAMES)
+    assert [s.key for s in result.project_report.sections] == list(SECTION_NAMES)
     assert result.project_report.summary.statement.strip()
     assert result.project_report.summary.span_ids
 
@@ -135,7 +135,7 @@ def test_evidence_gap_headline_is_fixed():
 def test_evidence_gap_statement_is_the_fixed_per_section_message():
     records, spans = _world()
     candidate = _candidate(records, spans)
-    candidate["project_report"]["sections"][1]["statement"] = "wrong statement"
+    candidate["project_report"]["sections"][1]["detail"] = "wrong statement"
     with pytest.raises(ValidationError):
         validate_analysis(candidate, records, spans)
 
@@ -145,7 +145,7 @@ def test_confirmed_status_requires_at_least_one_span():
     candidate = _candidate(records, spans)
     candidate["project_report"]["sections"][4]["status"] = "confirmed"
     candidate["project_report"]["sections"][4]["headline"] = "Confirmed"
-    candidate["project_report"]["sections"][4]["statement"] = "Confirmed with no span."
+    candidate["project_report"]["sections"][4]["detail"] = "Confirmed with no span."
     candidate["project_report"]["sections"][4]["span_ids"] = []
     with pytest.raises(ValidationError):
         validate_analysis(candidate, records, spans)
@@ -156,7 +156,7 @@ def test_not_applicable_status_requires_at_least_one_valid_span():
     candidate = _candidate(records, spans)
     candidate["project_report"]["sections"][5]["status"] = "not_applicable"
     candidate["project_report"]["sections"][5]["headline"] = "Not applicable"
-    candidate["project_report"]["sections"][5]["statement"] = "Not applicable here."
+    candidate["project_report"]["sections"][5]["detail"] = "Not applicable here."
     candidate["project_report"]["sections"][5]["span_ids"] = ["EV-GHOST:L001"]
     with pytest.raises(ValidationError):
         validate_analysis(candidate, records, spans)
@@ -192,7 +192,7 @@ def test_no_material_break_found_forbids_any_attention_section():
     candidate = _candidate(records, spans, attention=False)
     candidate["project_report"]["sections"][0]["status"] = "attention"
     candidate["project_report"]["sections"][0]["headline"] = "Needs review"
-    candidate["project_report"]["sections"][0]["statement"] = "Needs review."
+    candidate["project_report"]["sections"][0]["detail"] = "Needs review."
     candidate["project_report"]["sections"][0]["span_ids"] = [spans[0].span_id]
     with pytest.raises(ValidationError):
         validate_analysis(candidate, records, spans)

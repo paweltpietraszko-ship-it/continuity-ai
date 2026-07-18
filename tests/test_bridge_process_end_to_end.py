@@ -175,7 +175,7 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
         assert analyze_data["next_action"]["statement"].strip()
 
         project_report = analyze_data["project_report"]
-        assert [s["section"] for s in project_report["sections"]] == [
+        assert [s["key"] for s in project_report["sections"]] == [
             "decision", "budget", "schedule", "operations", "readiness", "casting", "agreements",
         ]
         assert project_report["summary"]["statement"].strip()

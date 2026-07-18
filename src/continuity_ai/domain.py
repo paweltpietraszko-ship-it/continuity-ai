@@ -53,7 +53,7 @@ class SemanticAnnotation:
 
 @dataclass(frozen=True)
 class ProjectReportSection:
-    section: ProjectReportSectionName; status: ProjectReportStatus; headline: str; statement: str; span_ids: tuple[str, ...]
+    key: ProjectReportSectionName; status: ProjectReportStatus; headline: str; detail: str; span_ids: tuple[str, ...]
 
 @dataclass(frozen=True)
 class ProjectReport:

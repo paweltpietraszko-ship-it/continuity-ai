@@ -65,12 +65,12 @@ def _propagation_world() -> tuple[tuple[ReasoningEvidence, ...], tuple]:
 _SECTION_NAMES = ("decision", "budget", "schedule", "operations", "readiness", "casting", "agreements")
 
 
-def _evidence_gap_section(section: str) -> dict:
+def _evidence_gap_section(key: str) -> dict:
     return {
-        "section": section,
+        "key": key,
         "status": "evidence_gap",
         "headline": "No verified status available",
-        "statement": f"No available project source establishes the current {section} status.",
+        "detail": f"No available project source establishes the current {key} status.",
         "span_ids": [],
     }
 
@@ -78,10 +78,10 @@ def _evidence_gap_section(section: str) -> dict:
 def _project_report_with_one_attention(summary_span_ids: list, attention_span_ids: list) -> dict:
     sections = [
         {
-            "section": "decision",
+            "key": "decision",
             "status": "attention",
             "headline": "Needs attention",
-            "statement": "The approved change has not fully propagated.",
+            "detail": "The approved change has not fully propagated.",
             "span_ids": attention_span_ids,
         },
         *[_evidence_gap_section(name) for name in _SECTION_NAMES[1:]],
@@ -179,7 +179,7 @@ def test_schema_3_0_round_trip_preserves_project_and_project_report():
     assert restored.result.schema_version == "3.0"
     assert restored.result.project_report.summary == saved.result.project_report.summary
     assert restored.result.project_report.sections == saved.result.project_report.sections
-    assert [s.section for s in restored.result.project_report.sections] == list(_SECTION_NAMES)
+    assert [s.key for s in restored.result.project_report.sections] == list(_SECTION_NAMES)
 
 
 def test_schema_2_0_retained_analysis_is_rejected_as_invalid():
@@ -630,13 +630,17 @@ def test_cross_vault_leakage_prevented_even_with_equal_evidence(tmp_path: Path):
     bridge.handle({"command": "load_project", "artifact_root": artifact_root_a})
     assert bridge.handle({"command": "analyze_project", "question": "vault a question"})["ok"] is True
     records_before_switch = bridge.records
+    assert records_before_switch  # sanity: vault A actually has live evidence loaded
 
     unlock_resp = bridge.handle({"command": "unlock_vault", "path": vault_b_path, "password": "secret-b"})
     assert unlock_resp["ok"] is True
 
-    # Vault B is empty and contributes no attestations, so the composed evidence
-    # tuple is trivially equal to vault A's -- equality must never stand in for identity.
-    assert bridge.records == records_before_switch
+    # Switching vaults never inherits the previous vault's live artifact evidence
+    # (even though vault B is empty and would otherwise trivially compare equal to a
+    # composition that happened to reuse vault A's artifacts) -- equality must never
+    # stand in for identity, and here isolation is enforced by clearing outright.
+    assert bridge.records != records_before_switch
+    assert bridge.records == ()
     assert bridge.analysis is None
     assert bridge.snapshot is None
     assert bridge.last_question is None
@@ -652,7 +656,7 @@ def test_analyze_project_response_contract_unchanged(tmp_path: Path):
     assert resp["ok"] is True
     data = resp["data"]
     assert set(data) == {
-        "analysis_status", "continuity_break_kind", "current_state", "semantic_annotations",
+        "project", "analysis_status", "continuity_break_kind", "current_state", "semantic_annotations",
         "continuity_break", "next_action", "project_report", "citation_cards",
         "analysis_id", "created_at", "prompt_version", "schema_version", "provider_id",
     }

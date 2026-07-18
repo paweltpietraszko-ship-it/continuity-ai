@@ -15,17 +15,17 @@ class ReasoningProvider(Protocol):
 
 EVIDENCE_GAP_HEADLINE = "No verified status available"
 
-def _evidence_gap_section(section: str) -> dict[str, Any]:
+def _evidence_gap_section(key: str) -> dict[str, Any]:
     return {
-        "section": section,
+        "key": key,
         "status": "evidence_gap",
         "headline": EVIDENCE_GAP_HEADLINE,
-        "statement": f"No available project source establishes the current {section} status.",
+        "detail": f"No available project source establishes the current {key} status.",
         "span_ids": [],
     }
 
-def _grounded_section(section: str, status: str, headline: str, statement: str, span_ids: list[str]) -> dict[str, Any]:
-    return {"section": section, "status": status, "headline": headline, "statement": statement, "span_ids": span_ids}
+def _grounded_section(key: str, status: str, headline: str, detail: str, span_ids: list[str]) -> dict[str, Any]:
+    return {"key": key, "status": status, "headline": headline, "detail": detail, "span_ids": span_ids}
 
 class FakeAuroraProvider:
     provider_id = "fake-provider-v1"
@@ -100,7 +100,7 @@ ROLES = {"approved_decision", "reflects_decision", "conflicts_with_decision", "n
 _RESULT_KEYS = {"schema_version", "analysis_status", "continuity_break_kind", "current_state", "semantic_annotations", "continuity_break", "next_action", "project_report"}
 _ANNOTATION_KEYS = {"evidence_id", "propagation_role", "context_tags"}
 _PROJECT_REPORT_KEYS = {"summary", "sections"}
-_SECTION_KEYS = {"section", "status", "headline", "statement", "span_ids"}
+_SECTION_KEYS = {"key", "status", "headline", "detail", "span_ids"}
 
 def _grounded_statement(obj: Any) -> GroundedStatement:
     """Structural shape only; span ownership is checked separately against whichever
@@ -109,6 +109,7 @@ def _grounded_statement(obj: Any) -> GroundedStatement:
     if not isinstance(obj["statement"], str) or not obj["statement"].strip(): raise ValidationError()
     spans = tuple(obj["span_ids"])
     if not spans or not all(isinstance(s, str) for s in spans): raise ValidationError()
+    if len(set(spans)) != len(spans): raise ValidationError()
     return GroundedStatement(obj["statement"], spans)
 
 def _span_owners(gs: GroundedStatement, span_owner: dict[str, str], evidence_ids: set[str]) -> set[str]:
@@ -119,27 +120,28 @@ def _span_owners(gs: GroundedStatement, span_owner: dict[str, str], evidence_ids
         parents.add(owner)
     return parents
 
-def _validate_section(obj: Any, expected_section: str, span_owner: dict[str, str], evidence_ids: set[str]) -> ProjectReportSection:
+def _validate_section(obj: Any, expected_key: str, span_owner: dict[str, str], evidence_ids: set[str]) -> ProjectReportSection:
     if not isinstance(obj, dict) or set(obj) != _SECTION_KEYS: raise ValidationError()
-    if obj["section"] != expected_section: raise ValidationError()
+    if obj["key"] != expected_key: raise ValidationError()
     status = obj["status"]
     if status not in PROJECT_REPORT_STATUSES: raise ValidationError()
-    headline, statement, span_ids = obj["headline"], obj["statement"], obj["span_ids"]
+    headline, detail, span_ids = obj["headline"], obj["detail"], obj["span_ids"]
     if not isinstance(headline, str) or not headline.strip(): raise ValidationError()
-    if not isinstance(statement, str) or not statement.strip(): raise ValidationError()
+    if not isinstance(detail, str) or not detail.strip(): raise ValidationError()
     if not isinstance(span_ids, list) or not all(isinstance(s, str) for s in span_ids): raise ValidationError()
+    if len(set(span_ids)) != len(span_ids): raise ValidationError()
 
     if status == "evidence_gap":
         if span_ids != []: raise ValidationError()
         if headline != EVIDENCE_GAP_HEADLINE: raise ValidationError()
-        if statement != f"No available project source establishes the current {expected_section} status.": raise ValidationError()
-        return ProjectReportSection(expected_section, status, headline, statement, ())
+        if detail != f"No available project source establishes the current {expected_key} status.": raise ValidationError()
+        return ProjectReportSection(expected_key, status, headline, detail, ())
 
     if not span_ids: raise ValidationError()
     for sid in span_ids:
         owner = span_owner.get(sid)
         if owner is None or owner not in evidence_ids: raise ValidationError()
-    return ProjectReportSection(expected_section, status, headline, statement, tuple(span_ids))
+    return ProjectReportSection(expected_key, status, headline, detail, tuple(span_ids))
 
 def _validate_project_report(obj: Any, evidence_ids: set[str], span_owner: dict[str, str], analysis_status: str, continuity_break: GroundedStatement | None) -> ProjectReport:
     if not isinstance(obj, dict) or set(obj) != _PROJECT_REPORT_KEYS: raise ValidationError()

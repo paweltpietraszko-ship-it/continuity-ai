@@ -46,8 +46,12 @@ class Bridge:
         if name == "initialize_vault":
             candidate = Vault(Path(cmd["path"]))
             session = candidate.initialize(cmd.get("owner_name", "Owner"), cmd["password"])
+            # A newly established vault starts with no live artifact evidence at all:
+            # the previous vault's artifact_records must never be composed against
+            # this one, or the new project would silently inherit the old project's
+            # live evidence before load_project is ever called for it.
             try:
-                candidate_records, candidate_spans = _compose_evidence(self.artifact_records, candidate)
+                candidate_records, candidate_spans = _compose_evidence((), candidate)
             except Exception:
                 candidate.lock()
                 raise
@@ -55,6 +59,8 @@ class Bridge:
             if previous_vault is not None:
                 previous_vault.lock()
             self.vault = candidate
+            self.artifact_records = ()
+            self.artifact_evidence_records = ()
             self.records = candidate_records
             self.spans = candidate_spans
             self._restore_from_vault(clear_project=True)
@@ -63,8 +69,11 @@ class Bridge:
         if name == "unlock_vault":
             candidate = Vault(Path(cmd["path"]))
             session = candidate.unlock(cmd["password"])
+            # Same isolation rule as initialize_vault: this vault's own project
+            # identity, if any, is restored below from its own retained analysis,
+            # never from whatever artifacts happened to be loaded for a prior vault.
             try:
-                candidate_records, candidate_spans = _compose_evidence(self.artifact_records, candidate)
+                candidate_records, candidate_spans = _compose_evidence((), candidate)
             except Exception:
                 candidate.lock()
                 raise
@@ -72,6 +81,8 @@ class Bridge:
             if previous_vault is not None:
                 previous_vault.lock()
             self.vault = candidate
+            self.artifact_records = ()
+            self.artifact_evidence_records = ()
             self.records = candidate_records
             self.spans = candidate_spans
             self._restore_from_vault(clear_project=True)
@@ -142,7 +153,7 @@ class Bridge:
             # ephemeral analysis as persisted (F-11).
             self.retained_analysis_status = RETAINED_ANALYSIS_VALID if persisted else RETAINED_ANALYSIS_NONE
             cards = self._hydrate_retained_cards(saved, result)
-            return {**_analysis_fields(result), "citation_cards": cards, **_snapshot_fields(snapshot)}
+            return {"project": self.project, **_analysis_fields(result), "citation_cards": cards, **_snapshot_fields(snapshot)}
 
         if name == "send_message":
             message = cmd["message"]

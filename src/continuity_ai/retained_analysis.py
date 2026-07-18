@@ -66,7 +66,7 @@ def saved_analysis_to_payload(saved: SavedAnalysis) -> dict[str, Any]:
         return None if gs is None else {"statement": gs.statement, "span_ids": list(gs.span_ids)}
 
     def section(s: Any) -> dict[str, Any]:
-        return {"section": s.section, "status": s.status, "headline": s.headline, "statement": s.statement, "span_ids": list(s.span_ids)}
+        return {"key": s.key, "status": s.status, "headline": s.headline, "detail": s.detail, "span_ids": list(s.span_ids)}
 
     return {
         "analysis_id": saved.analysis_id,

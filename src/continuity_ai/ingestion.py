@@ -127,8 +127,11 @@ def _validate_manifest_entries(payload: Any) -> list[dict[str, Any]]:
         )
     if payload.get("schema_version") != 1:
         raise ArtifactIngestionError("Evidence manifest schema_version is missing or unsupported.")
-    if not isinstance(payload.get("project"), str) or not payload["project"]:
-        raise ArtifactIngestionError("Evidence manifest project field is missing or invalid.")
+    project = payload.get("project")
+    # A project name is rejected rather than silently trimmed: a manifest carrying
+    # leading/trailing whitespace, or a blank/whitespace-only value, is not canonical.
+    if not isinstance(project, str) or not project.strip() or project != project.strip():
+        raise ArtifactIngestionError("Evidence manifest project field is missing or not canonical.")
 
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:

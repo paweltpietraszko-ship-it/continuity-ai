@@ -8,11 +8,15 @@ Ground truth: `src/continuity_ai/bridge.py`, `src/continuity_ai/bridge_main.py`,
 
 This revision reflects the Project Report contract, schema `3.0`:
 
-- every `AnalysisResult` now includes a mandatory `project_report` (a whole-project summary across seven fixed sections);
+- every `AnalysisResult` now includes a mandatory `project_report` (a whole-project summary across seven fixed sections; section 10 documents the exact frozen field names);
 - `load_project` and `get_workspace_state` now carry an explicit `project` identity and a neutral `evidence_records` projection;
+- `analyze_project`'s success response also carries `project` (section 4), sourced from the authoritative `Bridge.project`, never from provider output;
 - retained analyses now bind their `project` alongside their evidence snapshot; loading a different project while a retained analysis is active is rejected atomically as `project_mismatch`;
 - `initialize_vault`, `unlock_vault`, and `get_workspace_state` now expose `owner_display_name` (`null` while locked);
-- retained analyses from schema `2.0` are rejected as `retained_analysis_status: "invalid"` with no migration path.
+- retained analyses from schema `2.0` are rejected as `retained_analysis_status: "invalid"` with no migration path;
+- `initialize_vault` and `unlock_vault` never compose the new vault's evidence against the previous vault's `artifact_records`: switching vaults always clears live artifact evidence (`project`, `artifact_evidence_count`, `evidence_count`, `evidence_records` all reset) until `load_project` is called again for the newly active vault (section 9);
+- every grounded span list (`current_state`, `continuity_break`, `next_action`, `project_report.summary`, and each `project_report` section) rejects a repeated span ID rather than silently deduplicating it;
+- `evidence_manifest.json`'s `project` field must be a canonical string — non-empty after trimming and free of leading/trailing whitespace — or ingestion fails; a non-canonical name is never silently trimmed (section 9).
 
 ## 1. Process startup
 
@@ -141,7 +145,7 @@ All commands are sent as a single JSON object with a `command` field. Fields not
 
 - Required: `question` (string, non-blank after trim)
 - Preconditions: at least one evidence record must already be composed (`load_project` and/or an unlocked vault with attestations), and a `project` must already be established (i.e. `load_project` has succeeded at least once in this process)
-- Success data: current-state, continuity-break, next-action, semantic-annotation, and `project_report` fields (section 5), `citation_cards` (section 7), and snapshot metadata: `analysis_id`, `created_at`, `prompt_version`, `schema_version`, `provider_id`
+- Success data: `project` (the authoritative `Bridge.project`, never taken from provider output), current-state, continuity-break, next-action, semantic-annotation, and `project_report` fields (section 10), `citation_cards` (section 7), and snapshot metadata: `analysis_id`, `created_at`, `prompt_version`, `schema_version`, `provider_id`
 - Failure categories: `validation_error` (no evidence loaded, no project established, blank/non-string question, or the reasoning provider's output failing the canonical semantic validator); `provider_error` (the configured provider itself fails)
 - If the vault is currently unlocked, the analysis (bound to the current `project`) is transactionally persisted to the encrypted vault before this response is returned, and `retained_analysis_status` becomes `valid`. If no vault is unlocked at the time of the call, the analysis is still produced and returned, but it is not retained; `retained_analysis_status` becomes `none`. It is never reported as `valid` unless persistence actually succeeded.
 
@@ -216,7 +220,7 @@ evidence_count             int   — artifact records combined with any decrypte
 evidence_records           array — the neutral G-02 evidence projection (section 9); [] when nothing is loaded
 has_analysis               bool
 retained_analysis_status   string — "none" | "valid" | "invalid"
-project_report              object | null — present only when `has_analysis` is true (section 5); otherwise `null`
+project_report              object | null — present only when `has_analysis` is true (section 10); otherwise `null`
 pending_attestation_count  int
 pending_revision_count     int
 ```
@@ -302,6 +306,10 @@ The UI must not infer evidence ownership, semantic roles, source status, continu
 
 **`project`** is read exclusively from the `project` field of `evidence_manifest.json` at the root of the loaded `artifact_root`. It is never derived from a directory name, a fixture constant, or any other source. It is bound into `SavedAnalysis` alongside the evidence snapshot, persisted encrypted in the vault, and restored together with the rest of the retained analysis (section 5).
 
+The manifest's `project` value must be canonical: a non-empty string with no leading or trailing whitespace. A blank, whitespace-only, or leading/trailing-whitespace-padded value fails ingestion outright (`validation_error` from `load_project`); it is never silently trimmed to a canonical form.
+
+**Vault-switch isolation**: a successful `initialize_vault` or `unlock_vault` never composes the new vault's evidence against whatever `artifact_records` a previous vault had loaded. `project`, `artifact_records`, `artifact_evidence_records`, `records`, and `spans` are all reset before the new vault's own retained analysis (if any) is restored. Concretely: immediately after a vault switch and before any `load_project` call, `artifact_evidence_count == 0`, `evidence_count == 0` (or only the new vault's own decrypted attestations, if it has any), and `evidence_records == []`, regardless of what was loaded for the previous vault. A valid retained analysis for the newly active vault still restores its own `project` and `project_report` at this point — only the *live artifact* projection is cleared, not the retained history.
+
 **`evidence_records`** is a full, neutral projection of the ingested (G-02) evidence — no interpretive, semantic, or analysis-derived content. Each entry contains exactly:
 
 ```text
@@ -319,3 +327,46 @@ content
 This is the same shape ingestion already produces for every artifact; the Bridge does not add, remove, or reinterpret fields when exposing it.
 
 **`owner_display_name`** is read from the vault's already-encrypted owner profile (`payload["owner"]["display_name"]`) purely for display; it is never written to the plaintext vault envelope (the on-disk file's outer JSON keeps exactly `format`, `version`, `kdf`, `salt`, `encryption`, `nonce`, `ciphertext` — the owner's name lives only inside the encrypted `ciphertext`). It is `null` whenever no vault is unlocked. Before any vault is unlocked, the UI displays the fixed text `Local owner` instead of inventing or caching a name.
+
+## 10. Project Report shape (frozen)
+
+`project_report` (present whenever `has_analysis` is `true`, on `analyze_project` and `get_workspace_state`) is:
+
+```json
+{
+  "summary": {"statement": "<string>", "span_ids": ["<span-id>", "..."]},
+  "sections": [
+    {"key": "decision", "status": "confirmed", "headline": "<string>", "detail": "<string>", "span_ids": []},
+    {"key": "budget", "...": "..."},
+    {"key": "schedule", "...": "..."},
+    {"key": "operations", "...": "..."},
+    {"key": "readiness", "...": "..."},
+    {"key": "casting", "...": "..."},
+    {"key": "agreements", "...": "..."}
+  ]
+}
+```
+
+`summary` is a `GroundedStatement`: exactly `statement` and `span_ids`, same shape as `current_state`/`continuity_break`/`next_action`.
+
+Each entry in `sections` has exactly these fields — **`key` and `detail`, not `section` and `statement`**:
+
+```text
+key         one of: decision, budget, schedule, operations, readiness, casting, agreements
+status      one of: confirmed, attention, evidence_gap, not_applicable
+headline    non-empty string
+detail      non-empty string
+span_ids    array of span IDs (possibly empty only for evidence_gap)
+```
+
+Rules:
+
+- `sections` always has exactly seven entries, in exactly this order, each `key` appearing exactly once: `decision, budget, schedule, operations, readiness, casting, agreements`. A missing, extra, duplicated, or reordered section is rejected.
+- `evidence_gap` requires `span_ids == []`, the fixed `headline` `"No verified status available"`, and the fixed `detail` `"No available project source establishes the current <key> status."` with the literal key substituted.
+- `confirmed`, `attention`, and `not_applicable` each require at least one `span_ids` entry, and every span ID must belong to the analysis's authoritative evidence.
+- No grounded span list — `current_state`, `continuity_break`, `next_action`, `project_report.summary`, or any section's `span_ids` — may repeat the same span ID twice; a duplicate is rejected rather than silently deduplicated.
+- When `analysis_status` is `break_found`, at least one section has status `attention`, and at least one `attention` section shares a span ID with `continuity_break`.
+- When `analysis_status` is `no_material_break_found`, no section may have status `attention`.
+- `summary.statement` is non-empty and `summary.span_ids` has at least one entry belonging to the authoritative evidence.
+
+`citation_cards` (section 7) is the ordered, deduplicated union of every span ID referenced by `current_state`, `continuity_break`, `next_action`, `project_report.summary`, and every `project_report.sections[*]` entry, in that order.

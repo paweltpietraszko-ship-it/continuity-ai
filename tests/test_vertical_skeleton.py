@@ -468,8 +468,10 @@ def test_successful_initialize_vault_replacement_invalidates_previous_vault_and_
     assert set(old_key_buffer) == {0}
     assert old_vault.pending_attestations == {}
     assert bridge.vault is not old_vault
-    assert len(bridge.artifact_records) == 5
-    assert len(bridge.records) == 5
+    # A freshly established vault must not inherit the previous vault's live
+    # artifact evidence: nothing is loaded again until load_project is called.
+    assert len(bridge.artifact_records) == 0
+    assert len(bridge.records) == 0
     assert all(r.evidence_id != old_evidence_id for r in bridge.records)
     assert bridge.analysis is None
     assert bridge.snapshot is None
@@ -574,7 +576,11 @@ def test_successful_unlock_replacement_invalidates_old_session_and_refreshes_att
     assert set(old_session.key_buffer) == {0}
     assert old_vault.pending_attestations == {}
     assert bridge.vault is not old_vault
-    assert len(bridge.records) == 7
+    # Unlocking never inherits live artifact evidence from before the switch (even
+    # when the path happens to be the same vault re-opened): only the vault's own
+    # decrypted attestations are composed until load_project is called again.
+    assert len(bridge.artifact_records) == 0
+    assert len(bridge.records) == 2
     # The retained initial analysis (persisted during the first analyze_project call,
     # before any attestation) is restored from encrypted storage on unlock. It is not
     # rewritten by the out-of-band attestations added directly through the vault.
@@ -616,12 +622,12 @@ def _generic_provider_world(hostile_text='Current plan uses the east entrance.')
     return records, spans
 
 
-def _generic_evidence_gap_section(section):
+def _generic_evidence_gap_section(key):
     return {
-        'section': section,
+        'key': key,
         'status': 'evidence_gap',
         'headline': 'No verified status available',
-        'statement': f'No available project source establishes the current {section} status.',
+        'detail': f'No available project source establishes the current {key} status.',
         'span_ids': [],
     }
 
@@ -662,10 +668,10 @@ def _generic_analysis():
             },
             'sections': [
                 {
-                    'section': 'decision',
+                    'key': 'decision',
                     'status': 'attention',
                     'headline': 'Entrance decision not propagated',
-                    'statement': 'The approved entrance did not propagate to the runbook.',
+                    'detail': 'The approved entrance did not propagate to the runbook.',
                     'span_ids': ['EV-GEN-001:L001', 'EV-GEN-002:L001'],
                 },
                 _generic_evidence_gap_section('budget'),
@@ -1094,19 +1100,19 @@ def test_reasoning_response_schema_exact_snapshot():
         'type': 'object',
         'additionalProperties': False,
         'properties': {
-            'section': {'type': 'string', 'enum': list(section_names)},
+            'key': {'type': 'string', 'enum': list(section_names)},
             'status': {
                 'type': 'string',
                 'enum': ['confirmed', 'attention', 'evidence_gap', 'not_applicable'],
             },
             'headline': {'type': 'string', 'minLength': 1},
-            'statement': {'type': 'string', 'minLength': 1},
+            'detail': {'type': 'string', 'minLength': 1},
             'span_ids': {
                 'type': 'array',
                 'items': {'type': 'string', 'minLength': 1},
             },
         },
-        'required': ['section', 'status', 'headline', 'statement', 'span_ids'],
+        'required': ['key', 'status', 'headline', 'detail', 'span_ids'],
     }
     project_report = {
         'type': 'object',
