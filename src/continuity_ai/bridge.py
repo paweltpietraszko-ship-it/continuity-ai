@@ -6,16 +6,17 @@ from dataclasses import asdict, is_dataclass
 from continuity_ai import conversation
 from continuity_ai.domain import AuthenticatedUserAttestation, SavedAnalysis
 from continuity_ai.errors import PublicError, ProjectMismatchError, ValidationError, VaultLockedError
-from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, hydrate_citations, hydrate_snapshot_citations, snapshot_citation_statuses
+from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, content_sha256, hydrate_citations, hydrate_snapshot_citations, snapshot_citation_statuses
 from continuity_ai.ingestion import ingest_artifacts, read_project_name
 from continuity_ai.provider_selection import create_reasoning_provider
 from continuity_ai.reasoning_pipeline import run_analysis
 from continuity_ai.retained_analysis import RETAINED_ANALYSIS_NONE, RETAINED_ANALYSIS_VALID, restore_latest
+from continuity_ai.source_scoping.bridge_adapter import STATUS_APPROVED, STATUS_NONE, SourceScopingSession
 from continuity_ai.vault import Vault
 
 
 class Bridge:
-    def __init__(self, provider=None):
+    def __init__(self, provider=None, source_scoping_provider=None):
         self.vault = None
         self.project: str | None = None
         self.artifact_records: tuple = ()
@@ -27,6 +28,7 @@ class Bridge:
         self.last_question: str | None = None
         self.retained_analysis_status: str = RETAINED_ANALYSIS_NONE
         self.provider = provider if provider is not None else create_reasoning_provider()
+        self.source_scoping = SourceScopingSession(source_scoping_provider)
 
     def handle(self, cmd) -> dict:
         command_name = cmd.get("command") if isinstance(cmd, dict) else None
@@ -46,10 +48,6 @@ class Bridge:
         if name == "initialize_vault":
             candidate = Vault(Path(cmd["path"]))
             session = candidate.initialize(cmd.get("owner_name", "Owner"), cmd["password"])
-            # A newly established vault starts with no live artifact evidence at all:
-            # the previous vault's artifact_records must never be composed against
-            # this one, or the new project would silently inherit the old project's
-            # live evidence before load_project is ever called for it.
             try:
                 candidate_records, candidate_spans = _compose_evidence((), candidate)
             except Exception:
@@ -63,15 +61,13 @@ class Bridge:
             self.artifact_evidence_records = ()
             self.records = candidate_records
             self.spans = candidate_spans
+            self.source_scoping.reset()
             self._restore_from_vault(clear_project=True)
             return {"session_id": session.session_id, "owner_display_name": candidate.payload["owner"]["display_name"]}
 
         if name == "unlock_vault":
             candidate = Vault(Path(cmd["path"]))
             session = candidate.unlock(cmd["password"])
-            # Same isolation rule as initialize_vault: this vault's own project
-            # identity, if any, is restored below from its own retained analysis,
-            # never from whatever artifacts happened to be loaded for a prior vault.
             try:
                 candidate_records, candidate_spans = _compose_evidence((), candidate)
             except Exception:
@@ -85,6 +81,7 @@ class Bridge:
             self.artifact_evidence_records = ()
             self.records = candidate_records
             self.spans = candidate_spans
+            self.source_scoping.reset()
             self._restore_from_vault(clear_project=True)
             return {"session_id": session.session_id, "owner_display_name": candidate.payload["owner"]["display_name"]}
 
@@ -92,6 +89,7 @@ class Bridge:
             if self.vault is None:
                 raise VaultLockedError()
             self.vault.lock()
+            self.source_scoping.reset()
             self.records = self.artifact_records
             self.spans = build_spans(self.artifact_records)
             self._invalidate_analysis()
@@ -101,10 +99,6 @@ class Bridge:
             artifact_root = Path(cmd["artifact_root"])
             raw_records = ingest_artifacts(artifact_root)
             project_name = read_project_name(artifact_root)
-            # A retained analysis is grounded in one specific project; loading a
-            # different project's evidence while that analysis is active would make
-            # its project_report incoherent, so it is rejected atomically instead of
-            # silently swapping project identity out from under the retained report.
             if self.analysis is not None and project_name != self.project:
                 raise ProjectMismatchError()
             new_artifact_records = order_evidence(tuple(artifact_to_reasoning(r) for r in raw_records))
@@ -114,12 +108,16 @@ class Bridge:
             self.records = candidate_records
             self.spans = candidate_spans
             self.project = project_name
-            # A retained analysis is bound to its own encrypted snapshot, not to
-            # whatever project evidence happens to be loaded right now: reloading
-            # current evidence re-restores it from the same active vault rather than
-            # discarding it (F-05). Citation source status is recomputed against the
-            # newly loaded evidence the next time cards are hydrated.
             self._restore_from_vault(clear_project=False)
+            self.source_scoping.restore(project_name, self.artifact_records, self.vault)
+            if self.source_scoping.status == STATUS_APPROVED:
+                self._refresh_evidence()
+                if not self._analysis_matches_live_evidence():
+                    self._invalidate_analysis()
+            elif self.source_scoping.status != STATUS_NONE:
+                # A malformed or stale persisted scope blocks downstream reasoning and
+                # must not leave a retained report visible as if its source set were valid.
+                self._invalidate_analysis()
             return {
                 "project": self.project,
                 "artifact_evidence_count": len(self.artifact_records),
@@ -127,7 +125,35 @@ class Bridge:
                 "evidence_records": self.artifact_evidence_records,
             }
 
+        if name == "scope_project_sources":
+            if not self.artifact_records or self.project is None:
+                raise ValidationError()
+            requested_target = cmd.get("target_project", self.project)
+            if requested_target != self.project:
+                raise ProjectMismatchError()
+            response = self.source_scoping.classify(self.project, self.artifact_records)
+            self._invalidate_analysis()
+            return {"project": self.project, **response}
+
+        if name == "confirm_source_scope":
+            if self.project is None or not self.artifact_records:
+                raise ValidationError()
+            overrides = cmd.get("overrides")
+            if not isinstance(overrides, dict):
+                raise ValidationError()
+            response = self.source_scoping.approve(
+                self.artifact_records, overrides, vault=self.vault
+            )
+            self._invalidate_analysis()
+            self._refresh_evidence()
+            return {
+                "project": self.project,
+                "evidence_count": len(self.records),
+                **response,
+            }
+
         if name == "analyze_project":
+            self._refresh_evidence()
             if not self.records or self.project is None:
                 raise ValidationError()
             question = cmd.get("question", "")
@@ -148,9 +174,6 @@ class Bridge:
             self.spans = spans
             self.snapshot = snapshot
             self.last_question = question
-            # An analysis without an unlocked vault is a real in-memory result, but it
-            # was never retained: reporting "valid" here would falsely describe an
-            # ephemeral analysis as persisted (F-11).
             self.retained_analysis_status = RETAINED_ANALYSIS_VALID if persisted else RETAINED_ANALYSIS_NONE
             cards = self._hydrate_retained_cards(saved, result)
             return {"project": self.project, **_analysis_fields(result), "citation_cards": cards, **_snapshot_fields(snapshot)}
@@ -219,6 +242,8 @@ class Bridge:
                 "pending_attestation_count": pending_attestation_count,
                 "pending_revision_count": pending_revision_count,
             }
+            if self.source_scoping.status != STATUS_NONE:
+                data.update(self.source_scoping.state_payload())
             if self.analysis is not None and self.snapshot is not None and self.last_question and self.project:
                 saved = SavedAnalysis(self.snapshot.analysis_id, self.snapshot.created_at, self.analysis, self.snapshot, self.last_question, self.project)
                 data.update(_analysis_fields(self.analysis))
@@ -227,14 +252,23 @@ class Bridge:
 
         raise PublicError("unknown_command", "The command is not supported.")
 
+    def _active_artifact_records(self) -> tuple:
+        return self.source_scoping.active_evidence(self.artifact_records)
+
     def _refresh_evidence(self) -> None:
-        self.records, self.spans = _compose_evidence(self.artifact_records, self.vault)
+        self.records, self.spans = _compose_evidence(self._active_artifact_records(), self.vault)
+
+    def _analysis_matches_live_evidence(self) -> bool:
+        if self.snapshot is None:
+            return True
+        snapshot_records = tuple(
+            (str(record["evidence_id"]), str(record["canonical_content_sha256"]))
+            for record in self.snapshot.records
+        )
+        live_records = tuple((record.evidence_id, content_sha256(record.content)) for record in self.records)
+        return snapshot_records == live_records
 
     def _hydrate_retained_cards(self, saved: SavedAnalysis, result) -> tuple:
-        """Historical citation text and metadata always come from the retained
-        snapshot. Only the per-card source-status label is recomputed against
-        whatever live evidence is currently loaded, so drift is surfaced without
-        ever rewriting the retained quotation (F-04)."""
         statuses = snapshot_citation_statuses(saved.evidence_snapshot.records, self.records)
         return hydrate_snapshot_citations(saved, _citation_span_ids(result), statuses)
 
@@ -245,16 +279,6 @@ class Bridge:
         self.retained_analysis_status = RETAINED_ANALYSIS_NONE
 
     def _restore_from_vault(self, clear_project: bool) -> None:
-        """Clear any previous vault's in-memory analysis, then restore only the
-        newest retained analysis in the now-active vault if it is valid. Record
-        equality with a prior vault is never treated as proof of vault identity,
-        and a malformed newest entry never falls back to an older one.
-
-        `clear_project` distinguishes a vault switch (initialize_vault/unlock_vault,
-        where any previous vault's project identity must not leak into the new one)
-        from a same-vault re-derivation during load_project (where the project was
-        just authoritatively established from the freshly loaded manifest and must
-        not be reset merely because this vault has no valid retained analysis)."""
         self._invalidate_analysis()
         if clear_project:
             self.project = None
@@ -276,7 +300,6 @@ class Bridge:
 
 
 def _compose_evidence(artifact_records: tuple, candidate_vault) -> tuple[tuple, tuple]:
-    """Pure evidence composition: never mutates bridge or vault state."""
     records = artifact_records
     if candidate_vault is not None:
         try:

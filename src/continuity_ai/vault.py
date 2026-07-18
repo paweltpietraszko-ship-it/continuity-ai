@@ -8,6 +8,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from continuity_ai.domain import AuditEvent, AttestationProposal, AnalysisRevisionProposal, AuthenticatedUserAttestation, OwnerProfile, SavedAnalysis, VaultSession, utc_now
 from continuity_ai.errors import VaultAuthError, VaultLockedError, ValidationError, VaultAlreadyExistsError
 from continuity_ai.retained_analysis import saved_analysis_from_payload, saved_analysis_to_payload
+from continuity_ai.source_scoping.domain import ApprovedSourceScope
+from continuity_ai.source_scoping.serialization import approved_scope_from_payload, approved_scope_to_payload
 
 FORMAT="continuity-ai-vault"; VERSION=1
 KDF={"algorithm":"argon2id","time_cost":3,"memory_cost":65536,"parallelism":4,"hash_len":32,"version":19}
@@ -19,7 +21,7 @@ def derive(password: str, salt: bytes) -> bytes:
 def _aad() -> bytes: return f"{FORMAT}:{VERSION}".encode()
 def empty_payload(name: str) -> dict[str, Any]:
     owner=OwnerProfile("ACT-"+uuid.uuid4().hex, name, utc_now())
-    return {"schema_version":1,"vault_id":"VAULT-"+uuid.uuid4().hex,"owner":owner.__dict__,"attestations":[],"saved_analyses":[],"conversation":[],"audit_events":[]}
+    return {"schema_version":1,"vault_id":"VAULT-"+uuid.uuid4().hex,"owner":owner.__dict__,"attestations":[],"saved_analyses":[],"approved_source_scopes":[],"conversation":[],"audit_events":[]}
 def _write(path: Path, envelope: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data=json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
@@ -116,6 +118,16 @@ class Vault:
         saved_analysis_from_payload(record)
         candidate=dict(self.payload)
         candidate["saved_analyses"]=list(self.payload["saved_analyses"])+[record]
+        env=json.loads(self.path.read_text("utf-8")); salt=_ub64(env["salt"])
+        _write(self.path,_encrypt(candidate, bytes(session.key_buffer), salt))
+        self.payload=candidate
+    def save_approved_source_scope(self, scope: ApprovedSourceScope) -> None:
+        """Transactionally persist a validated human-approved source scope."""
+        session=self.require()
+        record=approved_scope_to_payload(scope)
+        approved_scope_from_payload(record)
+        candidate=dict(self.payload)
+        candidate["approved_source_scopes"]=list(self.payload.get("approved_source_scopes", []))+[record]
         env=json.loads(self.path.read_text("utf-8")); salt=_ub64(env["salt"])
         _write(self.path,_encrypt(candidate, bytes(session.key_buffer), salt))
         self.payload=candidate
