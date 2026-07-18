@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "target_project": "Project Aurora",
+  "expected_status_by_evidence_id": {
+    "EV-MIX-001": "included",
+    "EV-MIX-002": "included",
+    "EV-MIX-003": "included",
+    "EV-MIX-004": "excluded",
+    "EV-MIX-005": "excluded",
+    "EV-MIX-006": "excluded",
+    "EV-MIX-007": "excluded",
+    "EV-MIX-008": "ambiguous",
+    "EV-MIX-009": "ambiguous",
+    "EV-MIX-010": "ambiguous",
+    "EV-MIX-011": "included",
+    "EV-MIX-012": "included",
+    "EV-MIX-013": "ambiguous",
+    "EV-MIX-014": "excluded",
+    "EV-MIX-015": "ambiguous",
+    "EV-MIX-016": "included",
+    "EV-MIX-017": "excluded",
+    "EV-MIX-018": "excluded"
+  }
+}
