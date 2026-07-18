@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from continuity_ai.errors import ValidationError
+from continuity_ai.evidence import build_spans
 from continuity_ai.source_scoping.domain import (
     ApprovedSourceScope,
     ReviewedSourceDecision,
@@ -15,6 +17,17 @@ from continuity_ai.source_scoping.domain import (
 )
 
 _FINAL_STATUSES = frozenset({"included", "excluded"})
+_FINGERPRINT_FIELDS = (
+    "evidence_id",
+    "source_type",
+    "author_or_actor",
+    "timestamp",
+    "title",
+    "content",
+    "provenance",
+    "uri",
+    "artifact_sha256",
+)
 
 
 def _utc_now() -> str:
@@ -23,8 +36,24 @@ def _utc_now() -> str:
     )
 
 
-def _content_fingerprint(record: Any) -> str:
-    return hashlib.sha256(record.content.encode("utf-8")).hexdigest()
+def _record_fingerprint(record: Any) -> str:
+    try:
+        payload = {field: getattr(record, field) for field in _FINGERPRINT_FIELDS}
+    except AttributeError:
+        raise ValidationError() from None
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _fingerprints(evidence: tuple[Any, ...]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (record.evidence_id, _record_fingerprint(record)) for record in evidence
+    )
 
 
 def approve_source_scope(
@@ -32,7 +61,7 @@ def approve_source_scope(
     evidence: tuple[Any, ...],
     overrides: Mapping[str, str],
 ) -> ApprovedSourceScope:
-    """Apply explicit human corrections and require every ambiguous record to be resolved."""
+    """Apply explicit human corrections and require every ambiguity to be resolved."""
     if not isinstance(overrides, Mapping):
         raise ValidationError()
     decisions = {decision.evidence_id: decision for decision in result.decisions}
@@ -56,20 +85,25 @@ def approve_source_scope(
     for decision in result.decisions:
         if decision.evidence_id in overrides:
             final_status = overrides[decision.evidence_id]
-            user_overridden = final_status != decision.association_status
-            if decision.association_status == "ambiguous":
-                resolved.append(decision.evidence_id)
-                user_overridden = True
+        elif decision.association_status == "ambiguous":
+            raise ValidationError()
         else:
-            if decision.association_status == "ambiguous":
-                raise ValidationError()
             final_status = decision.association_status
-            user_overridden = False
+        user_overridden = (
+            decision.association_status == "ambiguous"
+            or final_status != decision.association_status
+        )
+        if decision.association_status == "ambiguous":
+            resolved.append(decision.evidence_id)
         reviewed.append(
             ReviewedSourceDecision(
                 evidence_id=decision.evidence_id,
                 final_status=final_status,
                 model_status=decision.association_status,
+                basis=decision.basis,
+                rationale=decision.rationale,
+                span_ids=decision.span_ids,
+                related_evidence_ids=decision.related_evidence_ids,
                 user_overridden=user_overridden,
             )
         )
@@ -77,7 +111,7 @@ def approve_source_scope(
             decision.evidence_id
         )
 
-    return ApprovedSourceScope(
+    scope = ApprovedSourceScope(
         schema_version=SCHEMA_VERSION,
         scope_id="SCOPE-" + uuid.uuid4().hex,
         target_project=result.target_project,
@@ -85,11 +119,47 @@ def approve_source_scope(
         approved_evidence_ids=tuple(approved),
         excluded_evidence_ids=tuple(excluded),
         user_resolved_evidence_ids=tuple(resolved),
-        evidence_fingerprints=tuple(
-            (record.evidence_id, _content_fingerprint(record)) for record in evidence
-        ),
+        evidence_fingerprints=_fingerprints(evidence),
         created_at=_utc_now(),
     )
+    validate_approved_scope_evidence(scope, evidence)
+    return scope
+
+
+def validate_approved_scope_evidence(
+    scope: ApprovedSourceScope,
+    evidence: tuple[Any, ...],
+) -> None:
+    """Bind reviewed decisions and spans to the exact evidence snapshot."""
+    evidence_ids = tuple(record.evidence_id for record in evidence)
+    if tuple(item.evidence_id for item in scope.reviewed_decisions) != evidence_ids:
+        raise ValidationError()
+    if scope.evidence_fingerprints != _fingerprints(evidence):
+        raise ValidationError()
+
+    span_owner = {
+        span.span_id: span.evidence_id for span in build_spans(evidence)
+    }
+    evidence_id_set = set(evidence_ids)
+    for decision in scope.reviewed_decisions:
+        if (
+            not decision.span_ids
+            or len(set(decision.span_ids)) != len(decision.span_ids)
+            or any(
+                span_owner.get(span_id) != decision.evidence_id
+                for span_id in decision.span_ids
+            )
+        ):
+            raise ValidationError()
+        if (
+            len(set(decision.related_evidence_ids))
+            != len(decision.related_evidence_ids)
+            or any(
+                related not in evidence_id_set or related == decision.evidence_id
+                for related in decision.related_evidence_ids
+            )
+        ):
+            raise ValidationError()
 
 
 def select_approved_evidence(
@@ -97,10 +167,6 @@ def select_approved_evidence(
     evidence: tuple[Any, ...],
 ) -> tuple[Any, ...]:
     """Return approved records only when the reviewed snapshot still matches."""
-    live_fingerprints = tuple(
-        (record.evidence_id, _content_fingerprint(record)) for record in evidence
-    )
-    if live_fingerprints != scope.evidence_fingerprints:
-        raise ValidationError()
+    validate_approved_scope_evidence(scope, evidence)
     approved = set(scope.approved_evidence_ids)
     return tuple(record for record in evidence if record.evidence_id in approved)

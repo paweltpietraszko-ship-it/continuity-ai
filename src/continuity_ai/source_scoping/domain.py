@@ -26,6 +26,28 @@ DECISION_BASES = frozenset({
     "insufficient_context",
 })
 
+REVIEWED_SOURCE_DECISION_FIELDS: tuple[str, ...] = (
+    "evidence_id",
+    "final_status",
+    "model_status",
+    "basis",
+    "rationale",
+    "span_ids",
+    "related_evidence_ids",
+    "user_overridden",
+)
+APPROVED_SOURCE_SCOPE_FIELDS: tuple[str, ...] = (
+    "schema_version",
+    "scope_id",
+    "target_project",
+    "reviewed_decisions",
+    "approved_evidence_ids",
+    "excluded_evidence_ids",
+    "user_resolved_evidence_ids",
+    "evidence_fingerprints",
+    "created_at",
+)
+
 
 @dataclass(frozen=True)
 class SourceScopingDecision:
@@ -53,6 +75,10 @@ class ReviewedSourceDecision:
     evidence_id: str
     final_status: FinalAssociationStatus
     model_status: AssociationStatus
+    basis: DecisionBasis
+    rationale: str
+    span_ids: tuple[str, ...]
+    related_evidence_ids: tuple[str, ...]
     user_overridden: bool
 
 

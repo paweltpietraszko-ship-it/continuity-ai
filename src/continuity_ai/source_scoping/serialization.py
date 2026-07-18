@@ -1,39 +1,58 @@
 """Strict serialization for encrypted persistence of approved source scopes."""
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
 from continuity_ai.errors import ValidationError
 from continuity_ai.source_scoping.domain import (
+    APPROVED_SOURCE_SCOPE_FIELDS,
+    ASSOCIATION_STATUSES,
+    DECISION_BASES,
+    REVIEWED_SOURCE_DECISION_FIELDS,
     ApprovedSourceScope,
     ReviewedSourceDecision,
     SCHEMA_VERSION,
 )
 
-_KEYS = {
-    "schema_version",
-    "scope_id",
-    "target_project",
-    "reviewed_decisions",
-    "approved_evidence_ids",
-    "excluded_evidence_ids",
-    "user_resolved_evidence_ids",
-    "evidence_fingerprints",
-    "created_at",
-}
-_DECISION_KEYS = {
-    "evidence_id",
-    "final_status",
-    "model_status",
-    "user_overridden",
-}
+_SCOPE_KEYS = frozenset(APPROVED_SOURCE_SCOPE_FIELDS)
+_DECISION_KEYS = frozenset(REVIEWED_SOURCE_DECISION_FIELDS)
 _FINAL_STATUSES = frozenset({"included", "excluded"})
-_MODEL_STATUSES = frozenset({"included", "excluded", "ambiguous"})
+_ALLOWED_BASIS_BY_MODEL_STATUS = {
+    "included": frozenset({"explicit_target", "corroborated_context"}),
+    "excluded": frozenset(
+        {"explicit_other_project", "corroborated_other_project"}
+    ),
+    "ambiguous": frozenset({"conflicting_context", "insufficient_context"}),
+}
+
+
+def _decision_to_payload(decision: ReviewedSourceDecision) -> dict[str, Any]:
+    """Serialize exactly the frozen ReviewedSourceDecision contract."""
+    return {
+        field: getattr(decision, field)
+        for field in REVIEWED_SOURCE_DECISION_FIELDS
+    }
 
 
 def approved_scope_to_payload(scope: ApprovedSourceScope) -> dict[str, Any]:
-    return asdict(scope)
+    """Serialize exactly the frozen ApprovedSourceScope persistence contract."""
+    payload = {
+        "schema_version": scope.schema_version,
+        "scope_id": scope.scope_id,
+        "target_project": scope.target_project,
+        "reviewed_decisions": tuple(
+            _decision_to_payload(decision)
+            for decision in scope.reviewed_decisions
+        ),
+        "approved_evidence_ids": scope.approved_evidence_ids,
+        "excluded_evidence_ids": scope.excluded_evidence_ids,
+        "user_resolved_evidence_ids": scope.user_resolved_evidence_ids,
+        "evidence_fingerprints": scope.evidence_fingerprints,
+        "created_at": scope.created_at,
+    }
+    if set(payload) != _SCOPE_KEYS:
+        raise ValidationError()
+    return payload
 
 
 def _string_sequence(value: Any) -> tuple[str, ...]:
@@ -58,20 +77,58 @@ def _reviewed_decisions(value: Any) -> tuple[ReviewedSourceDecision, ...]:
         evidence_id = raw["evidence_id"]
         if not isinstance(evidence_id, str) or not evidence_id or evidence_id in seen:
             raise ValidationError()
-        if raw["final_status"] not in _FINAL_STATUSES:
+
+        final_status = raw["final_status"]
+        model_status = raw["model_status"]
+        basis = raw["basis"]
+        rationale = raw["rationale"]
+        if final_status not in _FINAL_STATUSES:
             raise ValidationError()
-        if raw["model_status"] not in _MODEL_STATUSES:
+        if model_status not in ASSOCIATION_STATUSES:
             raise ValidationError()
-        if not isinstance(raw["user_overridden"], bool):
+        if basis not in DECISION_BASES:
             raise ValidationError()
-        if raw["model_status"] == "ambiguous" and not raw["user_overridden"]:
+        if basis not in _ALLOWED_BASIS_BY_MODEL_STATUS[model_status]:
             raise ValidationError()
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise ValidationError()
+
+        span_ids = _string_sequence(raw["span_ids"])
+        related_evidence_ids = _string_sequence(raw["related_evidence_ids"])
+        if evidence_id in related_evidence_ids:
+            raise ValidationError()
+        user_overridden = raw["user_overridden"]
+        if not isinstance(user_overridden, bool):
+            raise ValidationError()
+        if model_status == "ambiguous" and not user_overridden:
+            raise ValidationError()
+
         seen.add(evidence_id)
-        decisions.append(ReviewedSourceDecision(**raw))
+        decisions.append(
+            ReviewedSourceDecision(
+                evidence_id=evidence_id,
+                final_status=final_status,
+                model_status=model_status,
+                basis=basis,
+                rationale=rationale,
+                span_ids=span_ids,
+                related_evidence_ids=related_evidence_ids,
+                user_overridden=user_overridden,
+            )
+        )
+
+    if any(
+        related not in seen
+        for decision in decisions
+        for related in decision.related_evidence_ids
+    ):
+        raise ValidationError()
     return tuple(decisions)
 
 
-def _fingerprints(value: Any, evidence_ids: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+def _fingerprints(
+    value: Any, evidence_ids: tuple[str, ...]
+) -> tuple[tuple[str, str], ...]:
     if not isinstance(value, (list, tuple)):
         raise ValidationError()
     pairs: list[tuple[str, str]] = []
@@ -99,12 +156,16 @@ def _fingerprints(value: Any, evidence_ids: tuple[str, ...]) -> tuple[tuple[str,
 def approved_scope_from_payload(payload: Any) -> ApprovedSourceScope:
     if (
         not isinstance(payload, dict)
-        or set(payload) != _KEYS
+        or set(payload) != _SCOPE_KEYS
         or payload["schema_version"] != SCHEMA_VERSION
     ):
         raise ValidationError()
     for key in ("scope_id", "target_project", "created_at"):
-        if not isinstance(payload[key], str) or not payload[key].strip():
+        if (
+            not isinstance(payload[key], str)
+            or not payload[key].strip()
+            or payload[key] != payload[key].strip()
+        ):
             raise ValidationError()
 
     reviewed = _reviewed_decisions(payload["reviewed_decisions"])
