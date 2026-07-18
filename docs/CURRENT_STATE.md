@@ -1,12 +1,17 @@
 # Current State
 
-- GitHub-persisted state: PR #1 (Gate G-01), PR #4 (Gate G-02), PR #5 (Gate G-02 documentation closure), and PR #7 (revised MVP and roadmap boundary) are merged to main. Current main before PR #8: a6c5aa93f4c732cbdad6a067af56dbfcb36d97ce.
-- Gate status: Gate G-01 passed. Gate G-02 (deterministic artifact ingestion and normalization) passed. G-SEC-01 and G-03 have not started implementation.
-- Post-merge verification (Gate G-02): C:\Users\p_pie\.local\bin\uv.exe run pytest tests/test_aurora_fixture.py -v. Result: 10 passed. C:\Users\p_pie\.local\bin\uv.exe run pytest tests/test_ingestion.py -v. Result: 40 passed. C:\Users\p_pie\.local\bin\uv.exe run pytest tests/test_acceptance_project_promise.py -v. Result: 1 failed only with ReasoningPipelineNotImplementedError, intentionally. Local main and origin/main matched at 06de879024066e5af4c1a0ec28900861aeb82587. git status --short was empty. No files were modified after merge.
+- GitHub-persisted state: PR #1 (Gate G-01), PR #4 (Gate G-02), PR #5 (Gate G-02 documentation closure), and PR #7 (revised MVP and roadmap boundary) are merged to main. PR #9 remains open and unmerged; its base main commit remains 792c5332b33310eca8e51216605ef9f75b13ead1. No merge decision has been made.
+- Active PR branch: codex/implement-vertical-skeleton-from-commit.
+- Latest reviewed code checkpoint: 31775b382e938507cd26ef3ec5d7d4d57c60e573.
+- Current verification baseline: the full local suite completed with 131 passed.
+- Gate status: Gate G-01 passed. Gate G-02 (deterministic artifact ingestion and normalization) passed. Gate G-03 has not passed, and PR #9 is not merge-ready.
+- Historical Gate G-02 post-merge verification: the fixture suite completed with 10 passed, the ingestion suite completed with 40 passed, and the acceptance test produced the then-expected ReasoningPipelineNotImplementedError. That acceptance-test result describes the earlier G-02 checkpoint, not the current PR #9 branch.
 - What works: deterministic Project Aurora fixture generation and hardened G-02 ingestion for EML, ICS, XLSX, PDF, Markdown, and the production evidence manifest. Ground truth remains test-only and outside the production artifact root.
 - Production evidence contract (final, G-02): EvidenceRecord contains source_id, evidence_id, author, timestamp, source_type, title, uri, artifact_sha256, and content. It excludes timeline_position, business_purpose, semantic classifications, expected conclusions, and next actions. Chronology is UTC timestamp then evidence_id.
 - Accepted deferred G-02 finding: G02-NB-D1 — _pin_xlsx_modified_timestamp does not verify that exactly one dcterms:modified XML element was replaced. It is not on the MVP critical path.
-- Known failure: the final product acceptance test still fails only because the reasoning pipeline is not implemented. This remains intentional until the vertical-skeleton branch replaces it with a real offline fake-provider pipeline acceptance test.
+- Current repaired blockers: the real bridge vertical flow, the OpenAI reasoning-provider contract, and the implicit fake-provider fallback are repaired.
+- Production provider selection: CONTINUITY_REASONING_PROVIDER is required when no provider is injected. Production requires explicit provider selection. FakeAuroraProvider remains available only as an explicitly selected test/demo provider; it is not production reasoning.
+- Live-model status: a controlled live OpenAI smoke test has not yet been performed. No successful live GPT-5.6 API analysis may be claimed.
 - G-03 history: v0.1 was independently falsified and rejected. The v0.2 candidate introduced universal versus Aurora-profile separation, deterministic evidence spans, break/no-break outcomes, open conversation, and closed-world source validation.
 - Independent Fable 5 review of the combined security, reasoning, closed-evidence-world, and skeleton contracts returned REVISE BEFORE IMPLEMENTATION with two blockers. Both are accepted and resolved normatively in docs/FABLE5_CONTRACT_CORRECTIONS_v0.1.md.
 - Blocker correction 1: a conversation may propose a complete analysis revision, but it cannot replace the retained analysis without a dedicated explicit owner confirmation command. Locking invalidates the pending revision.
@@ -14,10 +19,11 @@
 - Additional accepted corrections: domain-neutral status-to-role consistency; versioned snapshot tests for every production prompt; no verified quotations in model prose; safe content-free controlled errors; fixed vault-lifetime salt and fresh per-write nonce; no plaintext password in VaultSession; best-effort key-buffer overwrite without a secure-erasure claim; UTF-8 bridge; backend-owned citation cards; non-empty bounded attestations; single-chain supersession.
 - KDF implementation decision: argon2-cffi Argon2id raw derivation is used for the skeleton; cryptography AESGCM provides authenticated encryption. This avoids depending on OpenSSL Argon2id capability on the demo machine.
 - The final implementation brief is docs/CODEX_VERTICAL_SKELETON_PROMPT.md. The earlier draft is not authoritative.
-- Accepted MVP scope, not yet implemented: one local owner, encrypted application vault, append-only owner attestations, persistent natural conversation, evidence-grounded initial analysis, confirmed analysis revisions, encrypted evidence snapshots, and stable JSON bridge output.
+- Accepted MVP scope: one local owner, encrypted application vault, append-only owner attestations, persistent natural conversation, evidence-grounded initial analysis, confirmed analysis revisions, encrypted evidence snapshots, and stable JSON bridge output. The current vertical skeleton implements only part of this scope; the persistence and conversation work listed below remains unresolved.
 - Excluded from MVP: LynxMask integration, voice, weather/web tools, multiple users or projects, biometrics, password recovery, cloud synchronization, autonomous source changes, and multi-model review inside the application.
 - UI and film remain parallel. UI may render only backend-owned source metadata and exact snapshot quotations. The Project Aurora failure is described as an operational contradiction, document drift, or state drift, not a document-system hallucination.
-- Next action: inspect PR #8 final diff, merge the frozen contracts, then start Codex from the resulting main commit using docs/CODEX_VERTICAL_SKELETON_PROMPT.md.
+- Remaining unresolved groups: conversation routing and grounding; persistence of retained analyses, evidence snapshots, conversation history, the full audit trail, and confirmed analysis revisions; controlled live-model evaluation; final UI-to-bridge-to-OpenAI-to-UI end-to-end coverage; consolidated default-suite network isolation; and a packaged demo runner.
+- Next technical stage after this documentation checkpoint: run one controlled live OpenAI smoke test for Project Aurora using a verified API model identifier and explicit environment configuration. This documentation checkpoint does not begin that test.
 
 ## 2026-07-17 Vertical Skeleton Correction Before Review
 
@@ -27,10 +33,10 @@
 - User-visible language must describe what Continuity AI found or could not find in ordinary human language and must not expose internal enum values, error codes, raw exception class names, object identifiers, or traceback details.
 - The normative record for this correction is `docs/GATE_G03_DECISION_PROVENANCE_AND_HUMAN_LANGUAGE_ADDENDUM_v0.1.md`.
 
-## 2026-07-17 PR #9 Repair Status
+## 2026-07-18 PR #9 Repair Status
 
-- PR #9 remains open and unmerged. The latest reviewed code checkpoint is 9333d46de42548cb940a5d065eff7c543f9bb1bf; later commits on the branch may contain documentation-only updates.
-- The branch contains the original Codex implementation (a88b3f7dbe3fc4dd972cf206d4174078cdb41cf5) plus four reviewed repair commits: Windows vault directory sync, vault initialization protection with restored error codes, proposal-session ownership binding, and the real bridge vertical flow.
+- PR #9 remains open and unmerged. Its base main commit remains 792c5332b33310eca8e51216605ef9f75b13ead1. The active branch is codex/implement-vertical-skeleton-from-commit, and the latest reviewed code checkpoint is 31775b382e938507cd26ef3ec5d7d4d57c60e573.
+- The branch contains the original Codex implementation (a88b3f7dbe3fc4dd972cf206d4174078cdb41cf5) plus six reviewed repair commits: Windows vault directory sync, vault initialization protection with restored error codes, proposal-session ownership binding, the real bridge vertical flow, the OpenAI reasoning-provider contract repair, and explicit reasoning-provider selection.
 - Accepted bridge vertical-flow repair:
   - commit 9333d46de42548cb940a5d065eff7c543f9bb1bf
   - message: Implement real bridge vertical flow
@@ -48,12 +54,28 @@
   - malformed commands and invalid field types return controlled public errors;
   - lock/unlock removes and restores decrypted attestation evidence correctly;
   - tests cover hostile provider prose and prove it cannot forge citation-card metadata.
+- The OpenAI reasoning-provider contract blocker is now repaired:
+  - the official OpenAI Python SDK and Responses API are used;
+  - the request includes the question, complete evidence records, deterministic spans, a versioned prompt, and strict JSON Schema output;
+  - store is false, tools are empty, and no streaming, background execution, previous response, or conversation chain is used;
+  - provider output and failure modes fail safely before semantic validation by run_analysis;
+  - URI, checksums, local paths, citation cards, and provider-owned display metadata are not sent to the model.
+- The implicit fake-provider fallback blocker is now repaired:
+  - provider selection is explicit, with openai and fake_aurora as the supported configured values;
+  - missing, blank, and unsupported configuration fails safely when no provider is injected;
+  - injected providers retain precedence, including falsy injected providers;
+  - selection and module import do not call the network;
+  - FakeAuroraProvider is an explicitly selected test/demo provider only.
+- Verification at the latest reviewed code checkpoint: focused stale-test regression 1 passed; targeted provider-selection suite 81 passed; full suite 131 passed; git diff --check passed; the normal non-force push completed; and the final working tree was clean.
+- A controlled live OpenAI smoke test has not yet been performed. No successful live GPT-5.6 API analysis may be claimed.
 - Do not claim Gate G-03 has passed.
 - Do not claim PR #9 is ready to merge.
 - Remaining unresolved blocker groups:
-  - production provider selection still defaults to the Aurora fake provider;
-  - the OpenAI adapter still does not receive the full evidence, spans, prompts, and strict schema contract;
-  - conversation routing and grounding remain insufficient;
-  - analyses, evidence snapshots, and conversation state are not persisted end-to-end;
-  - acceptance/end-to-end coverage and explicit network isolation remain incomplete.
-- Next action: select and repair one remaining blocker group. No merge decision has been made.
+  - conversation routing and grounding;
+  - persistence of retained analyses, evidence snapshots, conversation history, the full audit trail, and confirmed analysis revisions;
+  - controlled live-model evaluation;
+  - final UI-to-bridge-to-OpenAI-to-UI end-to-end coverage;
+  - consolidated default-suite network isolation;
+  - a packaged demo runner.
+- Next technical stage after this documentation checkpoint: one controlled live OpenAI smoke test for Project Aurora, using a verified API model identifier and explicit environment configuration.
+- Gate G-03 has not passed. PR #9 is not merge-ready. No merge decision has been made.

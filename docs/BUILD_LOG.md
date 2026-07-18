@@ -173,3 +173,40 @@
   - conversation routing and grounding remain insufficient;
   - analyses, evidence snapshots, and conversation state are not persisted end-to-end;
   - acceptance/end-to-end coverage and explicit network isolation remain incomplete.
+
+## 2026-07-18 PR #9 OpenAI Reasoning Provider Contract
+
+- Accepted commit: 9fe669ec447fbed8054dee5806af0da9aa297b0a.
+- Parent commit: a6958dd8f089e7c300458db36bca5deda0cca44a.
+- Commit message: Repair OpenAI reasoning provider contract.
+- Changed files: src/continuity_ai/openai_provider.py, src/continuity_ai/prompts.py, tests/test_vertical_skeleton.py.
+- Stat summary: 726 insertions, 27 deletions.
+- Tests: targeted suite result: 67 passed.
+- Tests: full suite result: 118 passed.
+- Verification: git diff --check passed.
+- Push: normal, non-force push.
+- Verification: the final working tree was clean.
+- Repaired: the provider uses the official OpenAI Python SDK and the Responses API; the API key comes from OPENAI_API_KEY; the model comes from CONTINUITY_OPENAI_MODEL; and the request contains the question, complete evidence records, and deterministic spans under a versioned prompt.
+- Repaired: the request asks for strict JSON Schema output, sets store to false, uses an empty tools list, and does not use streaming, background execution, a previous response, or a conversation chain.
+- Repaired: output_text is parsed; API failures, incomplete responses, refusals, malformed JSON, and non-object JSON fail safely; semantic validation remains owned by run_analysis.
+- Data boundary: URIs, checksums, local paths, citation cards, and provider-owned display metadata are not sent to the model.
+- Live-model status: no successful live OpenAI request was executed or claimed for this accepted commit.
+
+## 2026-07-18 PR #9 Explicit Reasoning-Provider Selection
+
+- Accepted commit: 31775b382e938507cd26ef3ec5d7d4d57c60e573.
+- Parent commit: 9fe669ec447fbed8054dee5806af0da9aa297b0a.
+- Commit message: Make reasoning provider selection explicit.
+- Changed files: src/continuity_ai/bridge.py, src/continuity_ai/provider_selection.py, src/continuity_ai/reasoning.py, tests/test_acceptance_project_promise.py, tests/test_ingestion.py, tests/test_vertical_skeleton.py.
+- Stat summary: 301 insertions, 14 deletions.
+- Tests: focused stale-test regression result: 1 passed.
+- Tests: targeted provider-selection suite result: 81 passed.
+- Tests: full suite result: 131 passed.
+- Verification: git diff --check passed.
+- Push: normal, non-force push.
+- Verification: the final working tree was clean.
+- Repaired: reasoning-provider selection is explicit. CONTINUITY_REASONING_PROVIDER is required when no provider is injected; supported configured values are openai and fake_aurora; surrounding whitespace is ignored; and matching is case-insensitive.
+- Repaired: missing, blank, or unsupported configured values fail safely; there is no implicit fake-provider fallback; an injected provider has precedence; and a falsy injected provider is not silently replaced.
+- Network boundary: provider selection itself does not call the network, and importing the module does not call the network.
+- Integration behavior: Bridge without injection requires explicit configuration, while answer_morning_question uses the shared provider factory when no provider is injected.
+- Provider status: FakeAuroraProvider remains an explicitly selected test/demo provider only. It is not production reasoning and is not evidence of GPT-5.6 operation.
