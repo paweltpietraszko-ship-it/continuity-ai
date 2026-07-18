@@ -26,6 +26,23 @@ Verify:
 
 Return findings grouped as BLOCKER, MAJOR, MINOR, or PASS. Include exact file and line references. Do not implement fixes during the audit.
 
+## Bounded correction after the first Cursor audit
+
+The first audit confirmed the Rust/TypeScript Bridge transport is correctly implemented, but that normal application lifecycle never called `bridge_start` and never performed the `get_workspace_state` handshake, that vault/conversation/attestations are local React simulation only, and that `tauri-plugin-dialog` had drifted to `2.7.2` in `Cargo.lock` against `2.4.0` in `package.json`.
+
+Implemented and runtime active as of this correction:
+
+- Bridge process startup — exactly once, from `main.tsx`, before React mounts;
+- `get_workspace_state` handshake immediately after a successful start;
+- controlled connection status (`connected` / `unavailable` / `browser_demo`) shown in the header, no process id or Python error detail exposed;
+- shutdown cleanup on `tauri::RunEvent::Exit` calling the idempotent `BridgeManager::stop()`;
+- `tauri-plugin-dialog` pinned to `=2.4.0` in `Cargo.toml`, matching `@tauri-apps/plugin-dialog@2.4.0` in `package.json`.
+
+Still demonstration-only, unchanged in scope:
+
+- Project Report rendering (`App.tsx` still renders only `src/data/demoWorkspace.ts`; the schema `3.0` adapter is not imported by `App.tsx`);
+- vault UI workflow, owner identity, conversation, and attestations — local React simulation, with copy corrected so no message claims a backend performed or persisted an operation.
+
 ## Additional Project Report v3 preparation audit
 
 The runtime report is intentionally not enabled yet. Also verify:

@@ -97,3 +97,21 @@ impl BridgeManager {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BridgeManager;
+
+    #[test]
+    fn stop_is_idempotent_when_the_bridge_never_started() {
+        let manager = BridgeManager::default();
+
+        let first = manager.stop().unwrap();
+        let second = manager.stop().unwrap();
+
+        assert!(!first.running);
+        assert!(!second.running);
+        assert_eq!(first.process_id, None);
+        assert_eq!(second.process_id, None);
+    }
+}

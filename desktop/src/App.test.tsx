@@ -3,6 +3,21 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "./App";
+import type { WorkspaceState } from "./bridge/contracts";
+
+const EMPTY_WORKSPACE_STATE: WorkspaceState = {
+  vault_unlocked: false,
+  owner_display_name: null,
+  project: null,
+  artifact_evidence_count: 0,
+  evidence_count: 0,
+  evidence_records: [],
+  has_analysis: false,
+  retained_analysis_status: "none",
+  project_report: null,
+  pending_attestation_count: 0,
+  pending_revision_count: 0,
+};
 
 beforeEach(() => {
   window.history.replaceState(null, "", "#aurora");
@@ -64,7 +79,64 @@ describe("Continuity AI desktop shell", () => {
     expect(screen.getByText("Not yet part of project evidence")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Confirm attestation" }));
-    expect(screen.getByText("The authenticated attestation has been added to the project evidence log.")).toBeInTheDocument();
+    expect(
+      screen.getByText("This demo attestation was added to the local preview only. It was not sent to a backend or persisted."),
+    ).toBeInTheDocument();
+  });
+
+  it("never claims the demo attestation was persisted by a backend", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Ask Continuity" }));
+    await user.type(screen.getByLabelText("Ask Continuity AI…"), "Add this statement to the project record: Crew transport has been reconfirmed.");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(screen.getByRole("button", { name: "Confirm attestation" }));
+
+    expect(screen.getByText(/was not sent to a backend or persisted/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText("The authenticated attestation has been added to the project evidence log."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Authenticated User Attestation added/)).not.toBeInTheDocument();
+  });
+
+  it("shows Local owner before any real backend unlock", () => {
+    render(<App />);
+
+    expect(screen.getByText("Local owner", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.queryByText("Paweł", { selector: "strong" })).not.toBeInTheDocument();
+  });
+
+  it("shows a connected Bridge status when bootstrap succeeds, without exposing the process id", () => {
+    render(
+      <App
+        bootstrap={{ mode: "connected", processId: 4242, workspaceState: EMPTY_WORKSPACE_STATE }}
+      />,
+    );
+
+    expect(screen.getByText("Local Bridge connected")).toBeInTheDocument();
+    expect(screen.queryByText(/4242/)).not.toBeInTheDocument();
+  });
+
+  it("shows an unavailable Bridge status with the demonstration fallback", () => {
+    render(<App bootstrap={{ mode: "unavailable", message: "Local Bridge unavailable" }} />);
+
+    expect(screen.getByText("Local Bridge unavailable · Demonstration mode")).toBeInTheDocument();
+  });
+
+  it("shows demonstration mode status when rendered outside Tauri", () => {
+    render(<App />);
+
+    expect(screen.getByText("Demonstration mode")).toBeInTheDocument();
+  });
+
+  it("marks the conversation drawer as a demonstration, not a backend response", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Ask Continuity" }));
+
+    expect(screen.getByRole("heading", { name: "Ask Continuity AI · Demonstration conversation" })).toBeInTheDocument();
   });
 
   it("locking the vault invalidates a pending attestation", async () => {

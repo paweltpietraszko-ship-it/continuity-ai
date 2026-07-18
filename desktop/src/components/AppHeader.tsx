@@ -1,10 +1,12 @@
 import type { ProjectKey, ViewName } from "../types/workspace";
 import { SYNTHETIC_PROJECTS } from "../data/demoWorkspace";
+import { bridgeStatusLabel, type BridgeBootstrapState } from "../bridge/bootstrap";
 
 interface AppHeaderProps {
   readonly project: ProjectKey;
   readonly view: ViewName;
   readonly vaultUnlocked: boolean;
+  readonly bootstrap: BridgeBootstrapState;
   readonly onOpenWorkspace: () => void;
   readonly onLockVault: () => void;
 }
@@ -20,7 +22,7 @@ function viewLabel(view: ViewName): string {
   return "Current Report";
 }
 
-export function AppHeader({ project, view, vaultUnlocked, onOpenWorkspace, onLockVault }: AppHeaderProps) {
+export function AppHeader({ project, view, vaultUnlocked, bootstrap, onOpenWorkspace, onLockVault }: AppHeaderProps) {
   return (
     <header className="topbar">
       <div className="brand">
@@ -39,14 +41,16 @@ export function AppHeader({ project, view, vaultUnlocked, onOpenWorkspace, onLoc
         ) : null}
         <strong>{view === "workspace" ? "Workspace" : projectLabel(project)}</strong>
         <span>{viewLabel(view)}</span>
+        <span className="demo-banner">Demonstration workspace · Synthetic production data</span>
       </div>
 
       <div className="owner">
         <div className="owner-copy">
-          <strong>Paweł</strong>
-          <span>{vaultUnlocked ? "Vault unlocked" : "Vault locked"}</span>
+          <strong>Local owner</strong>
+          <span>{vaultUnlocked ? "Demo vault view unlocked" : "Demo vault view locked"}</span>
+          <span className="bridge-status">{bridgeStatusLabel(bootstrap)}</span>
         </div>
-        <div className="avatar" aria-hidden="true">P</div>
+        <div className="avatar" aria-hidden="true">L</div>
         <button className="lock-button" type="button" onClick={onLockVault} disabled={!vaultUnlocked}>
           Lock vault
         </button>

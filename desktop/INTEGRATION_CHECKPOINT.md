@@ -10,17 +10,22 @@ The desktop package adds only `desktop/` and does not modify Python core, vault,
 
 ## Current scope
 
-Implemented and locally tested:
+Implemented and runtime active (following the Cursor audit bounded correction):
 
 - approved React/Tauri shell;
+- Bridge process startup, run exactly once from `main.tsx` before React mounts (`src/bridge/bootstrap.ts`), never from an `App.tsx` effect — avoids the double-invoke Bridge start that `React.StrictMode` would otherwise cause;
+- `get_workspace_state` handshake, performed by the bootstrap after a successful start;
+- controlled connection status shown in the header (`Local Bridge connected` / `Local Bridge unavailable · Demonstration mode` / `Demonstration mode`), with no process id or Python error detail exposed to the user;
+- shutdown cleanup on `tauri::RunEvent::Exit`, calling the idempotent `BridgeManager::stop()`;
 - persistent managed Python process;
 - UTF-8 NDJSON transport;
 - typed command/session layer for the transport checkpoint;
 - TypeScript contract and display adapter prepared for Project Report schema `3.0`.
 
-Not yet enabled:
+Still demonstration-only, not enabled:
 
-- executable Project Report v3 rendering from Bridge responses.
+- executable Project Report v3 rendering from Bridge responses — `App.tsx` still renders only `src/data/demoWorkspace.ts` synthetic data; the schema `3.0` adapter is not imported by `App.tsx`;
+- vault UI workflow, owner identity, conversation, and attestations remain a local React simulation with copy that explicitly says so (see `desktop/README.md`).
 
 The v3 runtime must wait for the new audited backend commit created from parent `8cf3845...`. The current checkpoint does not expose those report fields.
 

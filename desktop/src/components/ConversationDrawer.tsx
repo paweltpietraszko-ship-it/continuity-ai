@@ -41,7 +41,7 @@ export function ConversationDrawer({
   return (
     <aside className={`drawer bottom ${open ? "open" : ""}`} aria-hidden={!open} aria-label="Conversation with Continuity AI">
       <div className="drawer-head">
-        <h2>Ask Continuity AI</h2>
+        <h2>Ask Continuity AI · Demonstration conversation</h2>
         <button className="close" type="button" onClick={onClose} aria-label="Close conversation">×</button>
       </div>
       <div className="drawer-body">
@@ -70,7 +70,7 @@ export function ConversationDrawer({
                 <h3>Pending attestation</h3>
                 <p className="muted">Not yet part of project evidence</p>
                 <div className="proposal-text">{pendingAttestation}</div>
-                <p className="muted proposal-note">It will be saved with Paweł’s authenticated local identity, timestamp, and desktop text channel.</p>
+                <p className="muted proposal-note">This demo attestation will be added to this preview only, with a local timestamp. It is not sent to any backend and is not persisted.</p>
                 <div className="proposal-actions">
                   <button className="confirm-button" type="button" onClick={onConfirmAttestation} disabled={!vaultUnlocked}>Confirm attestation</button>
                   <button className="quiet-button" type="button" onClick={onCancelAttestation}>Cancel</button>

@@ -54,5 +54,5 @@ export interface ConversationMessage {
 
 export interface AuthenticatedAttestation extends EvidenceRecord {
   readonly type: "TEXT";
-  readonly role: "Authenticated User Attestation";
+  readonly role: "Demo attestation (preview only)";
 }

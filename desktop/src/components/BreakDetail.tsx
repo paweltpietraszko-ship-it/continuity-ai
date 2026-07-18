@@ -73,7 +73,7 @@ export function BreakDetail({ evidence, attestations, onBack, onOpenEvidence, on
 
             {attestations.length > 0 ? (
               <section className="state-group">
-                <div className="group-title"><h3>Additional provenance</h3><strong>Authenticated owner</strong></div>
+                <div className="group-title"><h3>Additional provenance</h3><strong>Demo provenance</strong></div>
                 <div className="evidence-grid">
                   {attestations.map((attestation) => (
                     <EvidenceCard key={attestation.id} record={attestation} tone="attestation" onOpen={() => onOpenEvidence(attestation.id)} />

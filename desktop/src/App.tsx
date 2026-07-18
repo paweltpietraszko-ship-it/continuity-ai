@@ -8,6 +8,7 @@ import { GenericReport } from "./components/GenericReport";
 import { SourcesDrawer } from "./components/SourcesDrawer";
 import { VaultOverlay } from "./components/VaultOverlay";
 import { Workspace } from "./components/Workspace";
+import type { BridgeBootstrapState } from "./bridge/bootstrap";
 import { AURORA_EVIDENCE, SYNTHETIC_PROJECTS } from "./data/demoWorkspace";
 import type {
   AuthenticatedAttestation,
@@ -16,6 +17,8 @@ import type {
   ProjectKey,
   ViewName,
 } from "./types/workspace";
+
+const DEFAULT_BOOTSTRAP: BridgeBootstrapState = { mode: "browser_demo" };
 
 const INITIAL_MESSAGES: readonly ConversationMessage[] = [
   {
@@ -40,7 +43,11 @@ function routeHash(view: ViewName, project: ProjectKey): string {
   return "aurora";
 }
 
-export function App() {
+interface AppProps {
+  readonly bootstrap?: BridgeBootstrapState;
+}
+
+export function App({ bootstrap = DEFAULT_BOOTSTRAP }: AppProps) {
   const [initial] = useState(initialRoute);
   const [view, setView] = useState<ViewName>(initial.view);
   const [project, setProject] = useState<ProjectKey>(initial.project);
@@ -130,7 +137,7 @@ export function App() {
 
     appendMessage({
       author: "agent",
-      text: "I can explain the current report, trace a conclusion to its sources, or prepare a statement for authenticated attestation.",
+      text: "I can explain the current report, trace a conclusion to its sources, or prepare a statement for this preview's demo attestation flow.",
     });
   }
 
@@ -149,23 +156,23 @@ export function App() {
     const attestation: AuthenticatedAttestation = {
       id,
       type: "TEXT",
-      title: "Authenticated User Attestation",
-      author: "Paweł",
+      title: "Demo attestation (preview only)",
+      author: "Demo owner · Paweł",
       time,
       timestamp: now.toISOString(),
       filename: "Continuity AI",
       quote: pendingAttestation,
-      role: "Authenticated User Attestation",
+      role: "Demo attestation (preview only)",
     };
 
     setAttestations((current) => [...current, attestation]);
     setPendingAttestation(null);
     appendMessage({
       author: "agent",
-      text: "The authenticated attestation has been added to the project evidence log.",
+      text: "This demo attestation was added to the local preview only. It was not sent to a backend or persisted.",
       citations: [id],
     });
-    setToast("Authenticated User Attestation added to project evidence.");
+    setToast("Demo attestation added to this preview only. It was not persisted.");
   }
 
   function cancelAttestation(): void {
@@ -177,12 +184,12 @@ export function App() {
     setVaultUnlocked(false);
     setPendingAttestation(null);
     setDrawer(null);
-    setToast("Local vault locked. Pending proposals were removed.");
+    setToast("Demo vault view locked locally. Pending proposals were removed.");
   }
 
   function unlockVault(): void {
     setVaultUnlocked(true);
-    setToast("Local vault unlocked.");
+    setToast("Demo vault view unlocked locally.");
   }
 
   return (
@@ -191,6 +198,7 @@ export function App() {
         project={project}
         view={view}
         vaultUnlocked={vaultUnlocked}
+        bootstrap={bootstrap}
         onOpenWorkspace={() => navigate("workspace", project)}
         onLockVault={lockVault}
       />

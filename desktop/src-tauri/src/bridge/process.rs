@@ -162,18 +162,18 @@ mod tests {
     use serde_json::json;
     use std::ffi::OsString;
     use std::fs;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn persistent_process_round_trips_utf8_ndjson() {
+    fn unique_temp_root(prefix: &str) -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "continuity-bridge-process-test-{}-{suffix}",
-            std::process::id()
-        ));
+        std::env::temp_dir().join(format!("{prefix}-{}-{suffix}", std::process::id()))
+    }
+
+    fn write_fake_bridge_main(root: &Path) {
         let package = root.join("src").join("continuity_ai");
         fs::create_dir_all(&package).unwrap();
         fs::write(package.join("__init__.py"), "").unwrap();
@@ -188,19 +188,40 @@ for raw in sys.stdin.buffer:
 "#,
         )
         .unwrap();
+    }
 
-        let config = BridgeLaunchConfig {
+    fn test_config(backend_root: PathBuf) -> BridgeLaunchConfig {
+        BridgeLaunchConfig {
             python: std::env::var_os("CONTINUITY_PYTHON")
                 .unwrap_or_else(|| OsString::from("python")),
-            backend_root: root.clone(),
+            backend_root,
             provider: "fake_aurora".to_owned(),
-        };
-        let mut process = BridgeProcess::spawn(config).unwrap();
+        }
+    }
+
+    #[test]
+    fn persistent_process_round_trips_utf8_ndjson() {
+        let root = unique_temp_root("continuity-bridge-process-test");
+        write_fake_bridge_main(&root);
+
+        let mut process = BridgeProcess::spawn(test_config(root.clone())).unwrap();
         let response = process
             .request(&json!({"command": "send_message", "text": "Paweł Żółć"}))
             .unwrap();
         assert_eq!(response["data"]["echo"], "Paweł Żółć");
         process.stop();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stop_terminates_the_python_subprocess() {
+        let root = unique_temp_root("continuity-bridge-process-stop-test");
+        write_fake_bridge_main(&root);
+
+        let mut process = BridgeProcess::spawn(test_config(root.clone())).unwrap();
+        process.stop();
+
+        assert!(!process.is_running().unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 }
