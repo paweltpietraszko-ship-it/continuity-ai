@@ -9,6 +9,10 @@ PROVENANCE_VALUES: frozenset[str] = frozenset({"artifact", "authenticated_user_a
 Role = Literal["approved_decision", "reflects_decision", "conflicts_with_decision", "none"]
 Status = Literal["break_found", "no_material_break_found"]
 BreakKind = Literal["propagation_break", "decision_provenance_not_found"]
+ProjectReportSectionName = Literal["decision", "budget", "schedule", "operations", "readiness", "casting", "agreements"]
+PROJECT_REPORT_SECTION_NAMES: tuple[str, ...] = ("decision", "budget", "schedule", "operations", "readiness", "casting", "agreements")
+ProjectReportStatus = Literal["confirmed", "attention", "evidence_gap", "not_applicable"]
+PROJECT_REPORT_STATUSES: frozenset[str] = frozenset({"confirmed", "attention", "evidence_gap", "not_applicable"})
 
 @dataclass(frozen=True)
 class ReasoningEvidence:
@@ -48,8 +52,16 @@ class SemanticAnnotation:
     evidence_id: str; propagation_role: Role; context_tags: tuple[Literal["urgency"], ...] = ()
 
 @dataclass(frozen=True)
+class ProjectReportSection:
+    section: ProjectReportSectionName; status: ProjectReportStatus; headline: str; statement: str; span_ids: tuple[str, ...]
+
+@dataclass(frozen=True)
+class ProjectReport:
+    summary: GroundedStatement; sections: tuple[ProjectReportSection, ...]
+
+@dataclass(frozen=True)
 class AnalysisResult:
-    schema_version: str; analysis_status: Status; continuity_break_kind: BreakKind | None; current_state: GroundedStatement; semantic_annotations: tuple[SemanticAnnotation, ...]; continuity_break: GroundedStatement | None; next_action: GroundedStatement | None
+    schema_version: str; analysis_status: Status; continuity_break_kind: BreakKind | None; current_state: GroundedStatement; semantic_annotations: tuple[SemanticAnnotation, ...]; continuity_break: GroundedStatement | None; next_action: GroundedStatement | None; project_report: ProjectReport
 
 @dataclass(frozen=True)
 class AnalysisRevisionProposal:
@@ -65,10 +77,12 @@ class EvidenceSnapshot:
 
 @dataclass(frozen=True)
 class SavedAnalysis:
-    analysis_id: str; created_at: str; result: AnalysisResult; evidence_snapshot: EvidenceSnapshot; question: str
+    analysis_id: str; created_at: str; result: AnalysisResult; evidence_snapshot: EvidenceSnapshot; question: str; project: str
     def __post_init__(self) -> None:
         if not self.question.strip():
             raise ValueError("a retained analysis must persist its non-empty original question")
+        if not self.project.strip():
+            raise ValueError("a retained analysis must persist its non-empty project name")
 
 @dataclass(frozen=True)
 class OwnerProfile:

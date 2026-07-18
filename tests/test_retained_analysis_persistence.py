@@ -62,6 +62,36 @@ def _propagation_world() -> tuple[tuple[ReasoningEvidence, ...], tuple]:
     return records, build_spans(records)
 
 
+_SECTION_NAMES = ("decision", "budget", "schedule", "operations", "readiness", "casting", "agreements")
+
+
+def _evidence_gap_section(section: str) -> dict:
+    return {
+        "section": section,
+        "status": "evidence_gap",
+        "headline": "No verified status available",
+        "statement": f"No available project source establishes the current {section} status.",
+        "span_ids": [],
+    }
+
+
+def _project_report_with_one_attention(summary_span_ids: list, attention_span_ids: list) -> dict:
+    sections = [
+        {
+            "section": "decision",
+            "status": "attention",
+            "headline": "Needs attention",
+            "statement": "The approved change has not fully propagated.",
+            "span_ids": attention_span_ids,
+        },
+        *[_evidence_gap_section(name) for name in _SECTION_NAMES[1:]],
+    ]
+    return {
+        "summary": {"statement": "Summary of the current project state.", "span_ids": summary_span_ids},
+        "sections": sections,
+    }
+
+
 def _propagation_candidate(records, spans) -> dict:
     span_a, span_b = spans[0].span_id, spans[1].span_id
     return {
@@ -75,6 +105,7 @@ def _propagation_candidate(records, spans) -> dict:
         ],
         "continuity_break": {"statement": "Approved but not propagated to the runbook.", "span_ids": [span_a, span_b]},
         "next_action": {"statement": "Update the runbook.", "span_ids": [span_b]},
+        "project_report": _project_report_with_one_attention([span_a], [span_a, span_b]),
     }
 
 
@@ -99,13 +130,14 @@ def _decision_provenance_candidate(records, spans) -> dict:
         ],
         "continuity_break": {"statement": "No decision found for this change.", "span_ids": [span_x, span_y]},
         "next_action": {"statement": "Add or link the decision that approved this change.", "span_ids": [span_x, span_y]},
+        "project_report": _project_report_with_one_attention([span_x], [span_x, span_y]),
     }
 
 
-def _build_saved_analysis(records, spans, candidate: dict, question: str = "what changed?") -> SavedAnalysis:
+def _build_saved_analysis(records, spans, candidate: dict, question: str = "what changed?", project: str = "Test Project") -> SavedAnalysis:
     result = validate_analysis(candidate, records, spans)
-    snapshot = make_snapshot("AN-TEST-" + uuid.uuid4().hex, records, spans, "g03_reasoning_v2", SUPPORTED_SCHEMA_VERSION, "test-provider-v1")
-    return SavedAnalysis(snapshot.analysis_id, snapshot.created_at, result, snapshot, question)
+    snapshot = make_snapshot("AN-TEST-" + uuid.uuid4().hex, records, spans, "g03_reasoning_v3", SUPPORTED_SCHEMA_VERSION, "test-provider-v1")
+    return SavedAnalysis(snapshot.analysis_id, snapshot.created_at, result, snapshot, question, project)
 
 
 def _valid_propagation_payload() -> dict:
@@ -133,6 +165,37 @@ def test_valid_retained_unit_restores_cleanly():
     restored = saved_analysis_from_payload(raw)
     assert restored.result.analysis_status == "break_found"
     assert restored.result.continuity_break_kind == "propagation_break"
+
+
+def test_schema_3_0_round_trip_preserves_project_and_project_report():
+    """Full SavedAnalysis schema 3.0 round-trip: project identity and the
+    complete project_report (summary + all seven sections) survive
+    serialize -> deserialize unchanged."""
+    records, spans = _propagation_world()
+    saved = _build_saved_analysis(records, spans, _propagation_candidate(records, spans), project="Round Trip Project")
+    restored = saved_analysis_from_payload(saved_analysis_to_payload(saved))
+
+    assert restored.project == "Round Trip Project"
+    assert restored.result.schema_version == "3.0"
+    assert restored.result.project_report.summary == saved.result.project_report.summary
+    assert restored.result.project_report.sections == saved.result.project_report.sections
+    assert [s.section for s in restored.result.project_report.sections] == list(_SECTION_NAMES)
+
+
+def test_schema_2_0_retained_analysis_is_rejected_as_invalid():
+    """A retained analysis from the superseded schema 2.0 contract (no
+    project_report, no top-level project) must be rejected outright rather
+    than migrated or partially accepted."""
+    raw = copy.deepcopy(_valid_propagation_payload())
+    del raw["project"]
+    del raw["result"]["project_report"]
+    raw["result"]["schema_version"] = "2.0"
+    raw["evidence_snapshot"]["schema_version"] = "2.0"
+    _assert_rejected(raw)
+
+    outcome = restore_latest([raw])
+    assert outcome.status == RETAINED_ANALYSIS_INVALID
+    assert outcome.saved is None
 
 
 def test_wrong_result_schema_version_rejected_on_restore():
@@ -212,7 +275,7 @@ def test_top_level_created_at_mismatch_rejected():
 
 def test_result_snapshot_schema_mismatch_rejected():
     raw = copy.deepcopy(_valid_propagation_payload())
-    raw["evidence_snapshot"]["schema_version"] = "3.0"
+    raw["evidence_snapshot"]["schema_version"] = "9.9"
     _assert_rejected(raw)
 
 
@@ -590,7 +653,7 @@ def test_analyze_project_response_contract_unchanged(tmp_path: Path):
     data = resp["data"]
     assert set(data) == {
         "analysis_status", "continuity_break_kind", "current_state", "semantic_annotations",
-        "continuity_break", "next_action", "citation_cards",
+        "continuity_break", "next_action", "project_report", "citation_cards",
         "analysis_id", "created_at", "prompt_version", "schema_version", "provider_id",
     }
     assert data["analysis_status"] == "break_found"

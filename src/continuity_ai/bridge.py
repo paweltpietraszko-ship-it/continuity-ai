@@ -5,9 +5,9 @@ from pathlib import Path
 from dataclasses import asdict, is_dataclass
 from continuity_ai import conversation
 from continuity_ai.domain import AuthenticatedUserAttestation, SavedAnalysis
-from continuity_ai.errors import PublicError, ValidationError, VaultLockedError
+from continuity_ai.errors import PublicError, ProjectMismatchError, ValidationError, VaultLockedError
 from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, hydrate_citations, hydrate_snapshot_citations, snapshot_citation_statuses
-from continuity_ai.ingestion import ingest_artifacts
+from continuity_ai.ingestion import ingest_artifacts, read_project_name
 from continuity_ai.provider_selection import create_reasoning_provider
 from continuity_ai.reasoning_pipeline import run_analysis
 from continuity_ai.retained_analysis import RETAINED_ANALYSIS_NONE, RETAINED_ANALYSIS_VALID, restore_latest
@@ -17,7 +17,9 @@ from continuity_ai.vault import Vault
 class Bridge:
     def __init__(self, provider=None):
         self.vault = None
+        self.project: str | None = None
         self.artifact_records: tuple = ()
+        self.artifact_evidence_records: tuple = ()
         self.records: tuple = ()
         self.spans: tuple = ()
         self.analysis = None
@@ -55,8 +57,8 @@ class Bridge:
             self.vault = candidate
             self.records = candidate_records
             self.spans = candidate_spans
-            self._restore_from_vault()
-            return {"session_id": session.session_id}
+            self._restore_from_vault(clear_project=True)
+            return {"session_id": session.session_id, "owner_display_name": candidate.payload["owner"]["display_name"]}
 
         if name == "unlock_vault":
             candidate = Vault(Path(cmd["path"]))
@@ -72,8 +74,8 @@ class Bridge:
             self.vault = candidate
             self.records = candidate_records
             self.spans = candidate_spans
-            self._restore_from_vault()
-            return {"session_id": session.session_id}
+            self._restore_from_vault(clear_project=True)
+            return {"session_id": session.session_id, "owner_display_name": candidate.payload["owner"]["display_name"]}
 
         if name == "lock_vault":
             if self.vault is None:
@@ -85,29 +87,43 @@ class Bridge:
             return {"locked": True}
 
         if name == "load_project":
-            new_artifact_records = order_evidence(
-                tuple(artifact_to_reasoning(r) for r in ingest_artifacts(Path(cmd["artifact_root"])))
-            )
+            artifact_root = Path(cmd["artifact_root"])
+            raw_records = ingest_artifacts(artifact_root)
+            project_name = read_project_name(artifact_root)
+            # A retained analysis is grounded in one specific project; loading a
+            # different project's evidence while that analysis is active would make
+            # its project_report incoherent, so it is rejected atomically instead of
+            # silently swapping project identity out from under the retained report.
+            if self.analysis is not None and project_name != self.project:
+                raise ProjectMismatchError()
+            new_artifact_records = order_evidence(tuple(artifact_to_reasoning(r) for r in raw_records))
             candidate_records, candidate_spans = _compose_evidence(new_artifact_records, self.vault)
             self.artifact_records = new_artifact_records
+            self.artifact_evidence_records = tuple(sorted(raw_records, key=lambda r: (r.timestamp, r.evidence_id)))
             self.records = candidate_records
             self.spans = candidate_spans
+            self.project = project_name
             # A retained analysis is bound to its own encrypted snapshot, not to
             # whatever project evidence happens to be loaded right now: reloading
             # current evidence re-restores it from the same active vault rather than
             # discarding it (F-05). Citation source status is recomputed against the
             # newly loaded evidence the next time cards are hydrated.
-            self._restore_from_vault()
-            return {"artifact_evidence_count": len(self.artifact_records), "evidence_count": len(self.records)}
+            self._restore_from_vault(clear_project=False)
+            return {
+                "project": self.project,
+                "artifact_evidence_count": len(self.artifact_records),
+                "evidence_count": len(self.records),
+                "evidence_records": self.artifact_evidence_records,
+            }
 
         if name == "analyze_project":
-            if not self.records:
+            if not self.records or self.project is None:
                 raise ValidationError()
             question = cmd.get("question", "")
             if not isinstance(question, str) or not question.strip():
                 raise ValidationError()
             result, spans, snapshot = run_analysis(self.records, question, self.provider)
-            saved = SavedAnalysis(snapshot.analysis_id, snapshot.created_at, result, snapshot, question)
+            saved = SavedAnalysis(snapshot.analysis_id, snapshot.created_at, result, snapshot, question, self.project)
             persisted = False
             if self.vault is not None:
                 try:
@@ -169,25 +185,31 @@ class Bridge:
             vault_unlocked = False
             pending_attestation_count = 0
             pending_revision_count = 0
+            owner_display_name = None
             if self.vault is not None:
                 pending_attestation_count = len(self.vault.pending_attestations)
                 pending_revision_count = len(self.vault.pending_revisions)
                 try:
                     self.vault.require()
                     vault_unlocked = True
+                    owner_display_name = self.vault.payload["owner"]["display_name"]
                 except VaultLockedError:
                     vault_unlocked = False
             data = {
                 "vault_unlocked": vault_unlocked,
+                "owner_display_name": owner_display_name,
+                "project": self.project,
                 "artifact_evidence_count": len(self.artifact_records),
                 "evidence_count": len(self.records),
+                "evidence_records": self.artifact_evidence_records,
                 "has_analysis": self.analysis is not None,
                 "retained_analysis_status": self.retained_analysis_status,
+                "project_report": None,
                 "pending_attestation_count": pending_attestation_count,
                 "pending_revision_count": pending_revision_count,
             }
-            if self.analysis is not None and self.snapshot is not None and self.last_question:
-                saved = SavedAnalysis(self.snapshot.analysis_id, self.snapshot.created_at, self.analysis, self.snapshot, self.last_question)
+            if self.analysis is not None and self.snapshot is not None and self.last_question and self.project:
+                saved = SavedAnalysis(self.snapshot.analysis_id, self.snapshot.created_at, self.analysis, self.snapshot, self.last_question, self.project)
                 data.update(_analysis_fields(self.analysis))
                 data["citation_cards"] = self._hydrate_retained_cards(saved, self.analysis)
             return data
@@ -211,12 +233,20 @@ class Bridge:
         self.last_question = None
         self.retained_analysis_status = RETAINED_ANALYSIS_NONE
 
-    def _restore_from_vault(self) -> None:
+    def _restore_from_vault(self, clear_project: bool) -> None:
         """Clear any previous vault's in-memory analysis, then restore only the
         newest retained analysis in the now-active vault if it is valid. Record
         equality with a prior vault is never treated as proof of vault identity,
-        and a malformed newest entry never falls back to an older one."""
+        and a malformed newest entry never falls back to an older one.
+
+        `clear_project` distinguishes a vault switch (initialize_vault/unlock_vault,
+        where any previous vault's project identity must not leak into the new one)
+        from a same-vault re-derivation during load_project (where the project was
+        just authoritatively established from the freshly loaded manifest and must
+        not be reset merely because this vault has no valid retained analysis)."""
         self._invalidate_analysis()
+        if clear_project:
+            self.project = None
         if self.vault is None:
             return
         try:
@@ -231,6 +261,7 @@ class Bridge:
         self.analysis = saved.result
         self.snapshot = saved.evidence_snapshot
         self.last_question = saved.question
+        self.project = saved.project
 
 
 def _compose_evidence(artifact_records: tuple, candidate_vault) -> tuple[tuple, tuple]:
@@ -255,6 +286,9 @@ def _citation_span_ids(result) -> tuple[str, ...]:
         ordered += list(result.continuity_break.span_ids)
     if result.next_action is not None:
         ordered += list(result.next_action.span_ids)
+    ordered += list(result.project_report.summary.span_ids)
+    for section in result.project_report.sections:
+        ordered += list(section.span_ids)
     seen: set[str] = set()
     unique: list[str] = []
     for span_id in ordered:
@@ -272,6 +306,7 @@ def _analysis_fields(result) -> dict:
         "semantic_annotations": result.semantic_annotations,
         "continuity_break": result.continuity_break,
         "next_action": result.next_action,
+        "project_report": result.project_report,
     }
 
 

@@ -23,7 +23,7 @@ def test_spans_snapshot_and_changed_source(tmp_path: Path):
     records=aurora(tmp_path); spans=build_spans(records)
     assert spans and spans[0].span_id.endswith("L001")
     result, spans, snap=run_analysis(records,"q",FakeAuroraProvider())
-    saved=SavedAnalysis(snap.analysis_id, snap.created_at, result, snap, "q")
+    saved=SavedAnalysis(snap.analysis_id, snap.created_at, result, snap, "q", "Project Aurora")
     cards=hydrate_snapshot_citations(saved, result.current_state.span_ids)
     assert cards[0].exact_text
     mutated=list(records); r=mutated[0]; mutated[0]=type(r)(r.evidence_id,r.source_type,r.author_or_actor,r.timestamp,r.title,r.content+" changed",r.provenance,r.uri,r.artifact_sha256)
@@ -186,7 +186,7 @@ def test_attestation_validation_and_hash():
     assert len(content_sha256(attestation_to_reasoning(a).content)) == 64
 
 def test_prompts_are_versioned_and_clean():
-    snaps=prompt_snapshots(); assert {"g03_reasoning_v2","g03_conversation_v1","g03_analysis_revision_v1","g03_attestation_proposal_v1"} <= set(snaps)
+    snaps=prompt_snapshots(); assert {"g03_reasoning_v3","g03_conversation_v1","g03_analysis_revision_v1","g03_attestation_proposal_v1"} <= set(snaps)
     assert_prompts_clean()
 
 def test_bridge_utf8_roundtrip(tmp_path: Path):
@@ -616,9 +616,19 @@ def _generic_provider_world(hostile_text='Current plan uses the east entrance.')
     return records, spans
 
 
+def _generic_evidence_gap_section(section):
+    return {
+        'section': section,
+        'status': 'evidence_gap',
+        'headline': 'No verified status available',
+        'statement': f'No available project source establishes the current {section} status.',
+        'span_ids': [],
+    }
+
+
 def _generic_analysis():
     return {
-        'schema_version': '2.0',
+        'schema_version': '3.0',
         'analysis_status': 'break_found',
         'continuity_break_kind': 'propagation_break',
         'current_state': {
@@ -644,6 +654,27 @@ def _generic_analysis():
         'next_action': {
             'statement': 'A human should reconcile the runbook with the approval.',
             'span_ids': ['EV-GEN-001:L001', 'EV-GEN-002:L001'],
+        },
+        'project_report': {
+            'summary': {
+                'statement': 'The supplied records conflict on the current entrance.',
+                'span_ids': ['EV-GEN-001:L001'],
+            },
+            'sections': [
+                {
+                    'section': 'decision',
+                    'status': 'attention',
+                    'headline': 'Entrance decision not propagated',
+                    'statement': 'The approved entrance did not propagate to the runbook.',
+                    'span_ids': ['EV-GEN-001:L001', 'EV-GEN-002:L001'],
+                },
+                _generic_evidence_gap_section('budget'),
+                _generic_evidence_gap_section('schedule'),
+                _generic_evidence_gap_section('operations'),
+                _generic_evidence_gap_section('readiness'),
+                _generic_evidence_gap_section('casting'),
+                _generic_evidence_gap_section('agreements'),
+            ],
         },
     }
 
@@ -825,6 +856,7 @@ def test_falsy_injected_provider_is_stored_and_used_exactly(monkeypatch):
     bridge = Bridge(injected)
     records, _ = _generic_provider_world()
     bridge.records = records
+    bridge.project = 'Generic Test Project'
 
     response = bridge.handle({'command': 'analyze_project', 'question': 'q'})
 
@@ -912,6 +944,7 @@ def test_openai_selected_bridge_runs_analysis_and_snapshots_provider(monkeypatch
     bridge = Bridge()
     records, _ = _generic_provider_world()
     bridge.records = records
+    bridge.project = 'Generic Test Project'
 
     response = bridge.handle({'command': 'analyze_project', 'question': 'q'})
 
@@ -1056,11 +1089,44 @@ def test_reasoning_response_schema_exact_snapshot():
         },
         'required': ['evidence_id', 'propagation_role', 'context_tags'],
     }
+    section_names = ['decision', 'budget', 'schedule', 'operations', 'readiness', 'casting', 'agreements']
+    section = {
+        'type': 'object',
+        'additionalProperties': False,
+        'properties': {
+            'section': {'type': 'string', 'enum': list(section_names)},
+            'status': {
+                'type': 'string',
+                'enum': ['confirmed', 'attention', 'evidence_gap', 'not_applicable'],
+            },
+            'headline': {'type': 'string', 'minLength': 1},
+            'statement': {'type': 'string', 'minLength': 1},
+            'span_ids': {
+                'type': 'array',
+                'items': {'type': 'string', 'minLength': 1},
+            },
+        },
+        'required': ['section', 'status', 'headline', 'statement', 'span_ids'],
+    }
+    project_report = {
+        'type': 'object',
+        'additionalProperties': False,
+        'properties': {
+            'summary': deepcopy(grounded),
+            'sections': {
+                'type': 'array',
+                'items': deepcopy(section),
+                'minItems': 7,
+                'maxItems': 7,
+            },
+        },
+        'required': ['summary', 'sections'],
+    }
     expected = {
         'type': 'object',
         'additionalProperties': False,
         'properties': {
-            'schema_version': {'type': 'string', 'const': '2.0'},
+            'schema_version': {'type': 'string', 'const': '3.0'},
             'analysis_status': {
                 'type': 'string',
                 'enum': ['break_found', 'no_material_break_found'],
@@ -1084,6 +1150,7 @@ def test_reasoning_response_schema_exact_snapshot():
             'next_action': {
                 'anyOf': [deepcopy(grounded), {'type': 'null'}],
             },
+            'project_report': deepcopy(project_report),
         },
         'required': [
             'schema_version',
@@ -1093,6 +1160,7 @@ def test_reasoning_response_schema_exact_snapshot():
             'semantic_annotations',
             'continuity_break',
             'next_action',
+            'project_report',
         ],
     }
     assert reasoning_response_schema() == expected
@@ -1354,6 +1422,9 @@ def test_no_break_requires_null_break_kind(tmp_path: Path):
     candidate["next_action"]=None
     for ann in candidate["semantic_annotations"]:
         ann["propagation_role"]="none"
+    for section in candidate["project_report"]["sections"]:
+        if section["status"] == "attention":
+            section["status"] = "confirmed"
     result=validate_analysis(candidate,records,spans)
     assert result.continuity_break_kind is None
     candidate["continuity_break_kind"]="propagation_break"

@@ -88,6 +88,17 @@ def ingest_artifacts(artifact_root: Path) -> tuple[EvidenceRecord, ...]:
     return tuple(record for _, _, record in ordered)
 
 
+def read_project_name(artifact_root: Path) -> str:
+    """Return the manifest's project name, independently validated the same way
+    ingest_artifacts validates the rest of the manifest, so callers can establish
+    project identity without depending on ingest_artifacts's evidence-record shape."""
+    validate_production_artifact_root(artifact_root)
+    manifest_path = artifact_root / MANIFEST_FILENAME
+    payload = _load_manifest(manifest_path)
+    _validate_manifest_entries(payload)
+    return payload["project"]
+
+
 def _load_manifest(manifest_path: Path) -> Any:
     if not manifest_path.is_file():
         raise ArtifactIngestionError(f"Evidence manifest not found at {manifest_path}.")

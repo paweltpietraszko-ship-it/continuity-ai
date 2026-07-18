@@ -145,13 +145,23 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
         )
         assert load_data["artifact_evidence_count"] == 5
         assert load_data["evidence_count"] == 5
+        assert load_data["project"] == "Project Aurora"
+        assert len(load_data["evidence_records"]) == 5
+        for record in load_data["evidence_records"]:
+            assert set(record) == {
+                "source_id", "evidence_id", "author", "timestamp",
+                "source_type", "title", "uri", "artifact_sha256", "content",
+            }
 
         state_before = _assert_ok(process_a.send({"command": "get_workspace_state"}), "get_workspace_state")
         assert state_before["vault_unlocked"] is True
         assert state_before["artifact_evidence_count"] == 5
         assert state_before["evidence_count"] == 5
+        assert state_before["project"] == "Project Aurora"
+        assert len(state_before["evidence_records"]) == 5
         assert state_before["has_analysis"] is False
         assert state_before["retained_analysis_status"] == "none"
+        assert state_before["project_report"] is None
 
         question = "Gdzie jest Project Aurora, jaki ciąg decyzji się urwał i co trzeba zrobić następnie?"
         analyze_data = _assert_ok(
@@ -163,6 +173,14 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
         assert analyze_data["current_state"]["statement"].strip()
         assert analyze_data["continuity_break"]["statement"].strip()
         assert analyze_data["next_action"]["statement"].strip()
+
+        project_report = analyze_data["project_report"]
+        assert [s["section"] for s in project_report["sections"]] == [
+            "decision", "budget", "schedule", "operations", "readiness", "casting", "agreements",
+        ]
+        assert project_report["summary"]["statement"].strip()
+        assert project_report["summary"]["span_ids"]
+        assert any(s["status"] == "attention" for s in project_report["sections"])
 
         manifest = _read_manifest(artifact_root)
         all_evidence_ids = {entry["evidence_id"] for entry in manifest["artifacts"]}
@@ -180,6 +198,7 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
         captured_current_state = analyze_data["current_state"]
         captured_continuity_break = analyze_data["continuity_break"]
         captured_next_action = analyze_data["next_action"]
+        captured_project_report = project_report
         captured_cards = cards_after_analysis
 
         state_after_analysis = _assert_ok(
@@ -188,9 +207,11 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
         assert state_after_analysis["vault_unlocked"] is True
         assert state_after_analysis["has_analysis"] is True
         assert state_after_analysis["retained_analysis_status"] == "valid"
+        assert state_after_analysis["project"] == "Project Aurora"
         assert state_after_analysis["current_state"] == captured_current_state
         assert state_after_analysis["continuity_break"] == captured_continuity_break
         assert state_after_analysis["next_action"] == captured_next_action
+        assert state_after_analysis["project_report"] == captured_project_report
         assert state_after_analysis["citation_cards"] == captured_cards
 
         lock_data = _assert_ok(process_a.send({"command": "lock_vault"}), "lock_vault")
@@ -198,8 +219,10 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
 
         state_locked = _assert_ok(process_a.send({"command": "get_workspace_state"}), "get_workspace_state")
         assert state_locked["vault_unlocked"] is False
+        assert state_locked["owner_display_name"] is None
         assert state_locked["has_analysis"] is False
         assert state_locked["retained_analysis_status"] == "none"
+        assert state_locked["project_report"] is None
         assert "citation_cards" not in state_locked
         assert "analysis_status" not in state_locked
 
@@ -213,12 +236,15 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
 
         state_restored = _assert_ok(process_b.send({"command": "get_workspace_state"}), "get_workspace_state")
         assert state_restored["vault_unlocked"] is True
+        assert state_restored["owner_display_name"] == "Paweł"
         assert state_restored["has_analysis"] is True
         assert state_restored["retained_analysis_status"] == "valid"
         assert state_restored["artifact_evidence_count"] == 0
+        assert state_restored["project"] == "Project Aurora"
         assert state_restored["current_state"] == captured_current_state
         assert state_restored["continuity_break"] == captured_continuity_break
         assert state_restored["next_action"] == captured_next_action
+        assert state_restored["project_report"] == captured_project_report
         assert state_restored["citation_cards"] == captured_cards
         for card in state_restored["citation_cards"]:
             assert card["source_status"] == "snapshot"
@@ -229,6 +255,8 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
         )
         assert reload_data["artifact_evidence_count"] == 5
         assert reload_data["evidence_count"] == 5
+        assert reload_data["project"] == "Project Aurora"
+        assert len(reload_data["evidence_records"]) == 5
 
         state_after_reload = _assert_ok(
             process_b.send({"command": "get_workspace_state"}), "get_workspace_state"
@@ -237,6 +265,8 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
         assert state_after_reload["evidence_count"] == 5
         assert state_after_reload["has_analysis"] is True
         assert state_after_reload["retained_analysis_status"] == "valid"
+        assert state_after_reload["project"] == "Project Aurora"
+        assert state_after_reload["project_report"] == captured_project_report
         for card in state_after_reload["citation_cards"]:
             original = next(c for c in captured_cards if c["span_id"] == card["span_id"])
             assert card["exact_text"] == original["exact_text"]

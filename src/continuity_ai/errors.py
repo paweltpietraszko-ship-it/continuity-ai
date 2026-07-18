@@ -34,3 +34,6 @@ class ProviderError(PublicError):
 class ExternalInformationUnavailableError(PublicError):
     def __init__(self) -> None:
         super().__init__("external_information_unavailable", "I can’t check current external information because web access is not available in this version.")
+class ProjectMismatchError(PublicError):
+    def __init__(self) -> None:
+        super().__init__("project_mismatch", "The selected project does not match the retained analysis.")

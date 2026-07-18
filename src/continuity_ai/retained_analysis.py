@@ -21,7 +21,7 @@ _SHA256_HEX_LENGTH = 64
 _SNAPSHOT_KEYS = {"analysis_id", "created_at", "records", "spans", "prompt_version", "schema_version", "provider_id"}
 _RECORD_KEYS = {"evidence_id", "provenance", "title", "author_or_actor", "timestamp", "source_type", "canonical_content_sha256", "artifact_sha256"}
 _SPAN_KEYS = {"span_id", "evidence_id", "exact_text"}
-_UNIT_KEYS = {"analysis_id", "created_at", "question", "result", "evidence_snapshot"}
+_UNIT_KEYS = {"analysis_id", "created_at", "question", "project", "result", "evidence_snapshot"}
 
 RETAINED_ANALYSIS_NONE = "none"
 RETAINED_ANALYSIS_VALID = "valid"
@@ -65,10 +65,14 @@ def saved_analysis_to_payload(saved: SavedAnalysis) -> dict[str, Any]:
     def grounded(gs: Any) -> dict[str, Any] | None:
         return None if gs is None else {"statement": gs.statement, "span_ids": list(gs.span_ids)}
 
+    def section(s: Any) -> dict[str, Any]:
+        return {"section": s.section, "status": s.status, "headline": s.headline, "statement": s.statement, "span_ids": list(s.span_ids)}
+
     return {
         "analysis_id": saved.analysis_id,
         "created_at": saved.created_at,
         "question": saved.question,
+        "project": saved.project,
         "result": {
             "schema_version": r.schema_version,
             "analysis_status": r.analysis_status,
@@ -80,6 +84,10 @@ def saved_analysis_to_payload(saved: SavedAnalysis) -> dict[str, Any]:
             ],
             "continuity_break": grounded(r.continuity_break),
             "next_action": grounded(r.next_action),
+            "project_report": {
+                "summary": grounded(r.project_report.summary),
+                "sections": [section(s) for s in r.project_report.sections],
+            },
         },
         "evidence_snapshot": {
             "analysis_id": snap.analysis_id,
@@ -157,10 +165,11 @@ def saved_analysis_from_payload(data: Any) -> SavedAnalysis:
     and binding between the top-level identity and the snapshot's own identity."""
     try:
         _require(isinstance(data, dict) and set(data) == _UNIT_KEYS)
-        analysis_id, created_at, question = data["analysis_id"], data["created_at"], data["question"]
+        analysis_id, created_at, question, project = data["analysis_id"], data["created_at"], data["question"], data["project"]
         _require(_non_empty_str(analysis_id))
         _require(is_valid_timestamp(created_at))
         _require(_non_empty_str(question))
+        _require(_non_empty_str(project))
 
         snapshot = _validate_snapshot_structure(data["evidence_snapshot"])
         evidence_ids, span_owner = _snapshot_authority(snapshot)
@@ -170,7 +179,7 @@ def saved_analysis_from_payload(data: Any) -> SavedAnalysis:
         _require(created_at == snapshot.created_at)
         _require(result.schema_version == snapshot.schema_version)
 
-        return SavedAnalysis(analysis_id, created_at, result, snapshot, question)
+        return SavedAnalysis(analysis_id, created_at, result, snapshot, question, project)
     except InvalidSavedAnalysisError:
         raise
     except (ValidationError, KeyError, TypeError, ValueError) as exc:
