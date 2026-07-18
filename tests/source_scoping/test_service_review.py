@@ -25,6 +25,14 @@ def _result(workspace):
     )
 
 
+def _approve_all_ambiguous_as_excluded(workspace):
+    records, result = _result(workspace)
+    overrides = {
+        evidence_id: "excluded" for evidence_id in result.ambiguous_evidence_ids
+    }
+    return records, result, approve_source_scope(result, records, overrides)
+
+
 def test_provider_failure_is_fail_closed(workspace):
     target, records, spans = workspace
     with pytest.raises(ProviderError):
@@ -51,25 +59,46 @@ def test_review_can_correct_any_model_decision(workspace):
     )
 
 
+def test_review_preserves_model_grounding_for_later_display(workspace):
+    _, result, scope = _approve_all_ambiguous_as_excluded(workspace)
+    reviewed = scope.reviewed_decisions[0]
+    original = result.decisions[0]
+    assert reviewed.model_basis == original.basis
+    assert reviewed.model_rationale == original.rationale
+    assert reviewed.span_ids == original.span_ids
+    assert reviewed.related_evidence_ids == original.related_evidence_ids
+
+
 def test_approved_handoff_preserves_input_order(workspace):
-    records, result = _result(workspace)
-    overrides = {
-        evidence_id: "excluded" for evidence_id in result.ambiguous_evidence_ids
-    }
-    scope = approve_source_scope(result, records, overrides)
+    records, _, scope = _approve_all_ambiguous_as_excluded(workspace)
     selected = select_approved_evidence(scope, records)
     assert tuple(record.evidence_id for record in selected) == scope.approved_evidence_ids
 
 
-def test_changed_source_invalidates_approved_scope(workspace):
-    records, result = _result(workspace)
-    overrides = {
-        evidence_id: "excluded" for evidence_id in result.ambiguous_evidence_ids
-    }
-    scope = approve_source_scope(result, records, overrides)
-    changed = (
-        replace(records[0], content=records[0].content + " changed"),
-        *records[1:],
-    )
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("content", "changed content"),
+        ("title", "Changed title"),
+        ("author_or_actor", "Different actor"),
+        ("timestamp", "2026-12-31T23:59:59Z"),
+        ("source_type", "different_type"),
+        ("uri", "synthetic://changed"),
+        ("artifact_sha256", "f" * 64),
+    ],
+)
+def test_any_neutral_record_change_invalidates_approved_scope(
+    workspace, field, replacement
+):
+    records, _, scope = _approve_all_ambiguous_as_excluded(workspace)
+    changed_record = replace(records[0], **{field: replacement})
+    changed = (changed_record, *records[1:])
     with pytest.raises(ValidationError):
         select_approved_evidence(scope, tuple(changed))
+
+
+def test_reordered_source_set_invalidates_approved_scope(workspace):
+    records, _, scope = _approve_all_ambiguous_as_excluded(workspace)
+    reordered = (records[1], records[0], *records[2:])
+    with pytest.raises(ValidationError):
+        select_approved_evidence(scope, tuple(reordered))
