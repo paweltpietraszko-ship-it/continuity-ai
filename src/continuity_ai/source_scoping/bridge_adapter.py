@@ -21,6 +21,14 @@ STATUS_NONE = "none"
 STATUS_PENDING_REVIEW = "pending_review"
 STATUS_APPROVED = "approved"
 STATUS_INVALID = "invalid"
+STATUS_LOCKED = "locked"
+STATUS_RESCOPING_REQUIRED = "rescoping_required"
+_BLOCKING_STATUSES = frozenset({
+    STATUS_PENDING_REVIEW,
+    STATUS_INVALID,
+    STATUS_LOCKED,
+    STATUS_RESCOPING_REQUIRED,
+})
 
 
 class SourceScopingSession:
@@ -36,6 +44,19 @@ class SourceScopingSession:
         self.approved_scope = None
         self.status = STATUS_NONE
         self.persisted = False
+
+    def lock(self) -> None:
+        """Clear review details while preserving a fail-closed gate across vault lock."""
+        had_gate = self.status != STATUS_NONE
+        self.result = None
+        self.approved_scope = None
+        self.persisted = False
+        self.status = STATUS_LOCKED if had_gate else STATUS_NONE
+
+    def after_unlock(self) -> None:
+        """Require restore or re-scoping when a gate existed before reauthentication."""
+        if self.status == STATUS_LOCKED:
+            self.status = STATUS_RESCOPING_REQUIRED
 
     def classify(
         self, target_project: str, evidence: tuple[Any, ...]
@@ -69,20 +90,16 @@ class SourceScopingSession:
         scope = approve_source_scope(self.result, evidence, overrides)
         persisted = False
         if vault is not None:
-            try:
-                vault.require()
-            except VaultLockedError:
-                pass
-            else:
-                vault.save_approved_source_scope(scope)
-                persisted = True
+            vault.require()
+            vault.save_approved_source_scope(scope)
+            persisted = True
         self.approved_scope = scope
         self.status = STATUS_APPROVED
         self.persisted = persisted
         return {"approved_source_scope": scope, "persisted": persisted}
 
     def active_evidence(self, evidence: tuple[Any, ...]) -> tuple[Any, ...]:
-        if self.status in {STATUS_PENDING_REVIEW, STATUS_INVALID}:
+        if self.status in _BLOCKING_STATUSES:
             raise ValidationError()
         if self.approved_scope is None:
             return evidence
@@ -91,12 +108,17 @@ class SourceScopingSession:
     def restore(
         self, target_project: str, evidence: tuple[Any, ...], vault
     ) -> None:
-        self.reset()
+        require_scope = self.status in {STATUS_LOCKED, STATUS_RESCOPING_REQUIRED}
+        self.result = None
+        self.approved_scope = None
+        self.persisted = False
+        self.status = STATUS_RESCOPING_REQUIRED if require_scope else STATUS_NONE
         if vault is None:
             return
         try:
             vault.require()
         except VaultLockedError:
+            self.status = STATUS_LOCKED if require_scope else STATUS_NONE
             return
         restoration = restore_latest_approved_scope(
             vault.payload.get("approved_source_scopes", []),
