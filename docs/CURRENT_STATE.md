@@ -2,8 +2,10 @@
 
 - GitHub-persisted state: PR #1 (Gate G-01), PR #4 (Gate G-02), PR #5 (Gate G-02 documentation closure), and PR #7 (revised MVP and roadmap boundary) are merged to main. PR #9 remains open and unmerged; its base main commit remains 792c5332b33310eca8e51216605ef9f75b13ead1. No merge decision has been made.
 - Active PR branch: codex/implement-vertical-skeleton-from-commit.
-- Current branch HEAD after the provider documentation checkpoint: 6853e64c6bdd05f78e97937083d3de7895c068cb. This is a documentation-only checkpoint.
-- Latest reviewed code checkpoint: 31775b382e938507cd26ef3ec5d7d4d57c60e573.
+- Current branch HEAD after semantic-resolution contract freeze: 63ddc6530eb242a41ae0ac920253030cbb6f08fa.
+- Semantic-resolution contract freeze commit message: `Freeze semantic resolution contract`.
+- Semantic-resolution contract freeze parent: 11c210555a4f6259a0b5a360212485e8f8a9a074.
+- The latest reviewed code checkpoint remains: 31775b382e938507cd26ef3ec5d7d4d57c60e573.
 - Current verification baseline: the full local suite completed with 131 passed.
 - Gate status: Gate G-01 passed. Gate G-02 (deterministic artifact ingestion and normalization) passed. Gate G-03 has not passed, and PR #9 is not merge-ready.
 - Historical Gate G-02 post-merge verification: the fixture suite completed with 10 passed, the ingestion suite completed with 40 passed, and the acceptance test produced the then-expected ReasoningPipelineNotImplementedError. That acceptance-test result describes the earlier G-02 checkpoint, not the current PR #9 branch.
@@ -13,8 +15,9 @@
 - Current repaired blockers: the real bridge vertical flow, the OpenAI reasoning-provider contract, and the implicit fake-provider fallback are repaired.
 - Production provider selection: CONTINUITY_REASONING_PROVIDER is required when no provider is injected. Production requires explicit provider selection. FakeAuroraProvider remains available only as an explicitly selected test/demo provider; it is not production reasoning.
 - Current operating boundary: the bridge, OpenAI adapter contract, and explicit provider selection operate against a pre-grouped candidate workspace. The system currently analyzes user-selected, already grouped project artifacts.
-- Semantic Project Resolution is not implemented. The system must not yet be described as resolving naturally inconsistent project references across scattered sources.
-- Decision Scope Resolution is not implemented. The system must not yet be described as resolving whether Mobile, Desktop, both variants, or global product-family scope applies.
+- `docs/SEMANTIC_PROJECT_AND_DECISION_SCOPE_RESOLUTION_CONTRACT_v0.1.md` is accepted, falsified, frozen, and normative.
+- Semantic Project Resolution and Decision Scope Resolution are still not implemented. The system must not yet be described as resolving naturally inconsistent project references across scattered sources or deciding whether Mobile, Desktop, both variants, or global product-family scope applies.
+- Freezing the semantic-resolution contract authorizes only the bounded implementation package described in that contract. It does not authorize broader product claims.
 - Live-model status: semantic project-identity reconstruction and decision-scope reconstruction have not been live-evaluated. No successful live GPT-5.6 semantic-resolution or continuity-analysis result may be claimed.
 - Strong-claim blocker: semantic resolution must precede the claim that Continuity AI reconstructs project state from scattered, naturally written artifacts and must precede the final live evaluation.
 - G-03 history: v0.1 was independently falsified and rejected. The v0.2 candidate introduced universal versus Aurora-profile separation, deterministic evidence spans, break/no-break outcomes, open conversation, and closed-world source validation.
@@ -30,14 +33,16 @@
 - Competition slice: one candidate workspace; Project Aurora; varied natural references; one minimal decoy or ambiguous source; deterministic supporting spans; backend validation; ambiguity handling; and a small LynxMask Mobile/Desktop decision-scope fixture. It is not a universal resolver.
 - Scope exclusions: this checkpoint does not claim or authorize automatic project discovery, general knowledge-graph capability, persistent alias learning, full resolution-record persistence, arbitrary multi-project support, full UI integration, a finished film, or a completed Devpost submission.
 - Remaining unresolved groups: Semantic Project Resolution and Decision Scope Resolution; conversation routing and grounding; persistence of retained analyses, evidence snapshots, conversation history, the full audit trail, and confirmed analysis revisions; controlled live-model evaluation; final UI-to-bridge-to-OpenAI-to-UI end-to-end coverage; consolidated default-suite network isolation; and a packaged demo runner.
-- Next documentation action: create a separate docs-only contract at docs/SEMANTIC_PROJECT_AND_DECISION_SCOPE_RESOLUTION_CONTRACT_v0.1.md. That contract package must be reviewed, falsified, and frozen before implementation.
-- Required sequence:
-  1. complete and commit this semantic-resolution documentation checkpoint;
-  2. create the separate docs-only semantic-resolution contract;
-  3. falsify and freeze that contract;
-  4. implement one bounded competition vertical slice;
-  5. run one controlled semantic-resolution plus continuity-analysis live test;
-  6. wire or capture UI and film only after that backend result is real.
+- Immediate sequence:
+  1. complete and review this pitch/current-state docs-only checkpoint;
+  2. run the bounded Retained Analysis Persistence and Snapshot Fidelity CC package;
+  3. perform a point Cursor re-audit of that repair only;
+  4. perform independent Codex destructive testing and diff verification;
+  5. commit only after acceptance;
+  6. continue with the separately approved conversation-grounding and test-hardening packages;
+  7. implement the frozen bounded Semantic Resolution slice;
+  8. run the controlled live semantic-resolution plus continuity-analysis evaluation;
+  9. update UI, film, README, pitch, and submission claims only from validated results.
 
 ## 2026-07-17 Vertical Skeleton Correction Before Review
 
@@ -85,13 +90,62 @@
 - Semantic project identity and decision scope have not been live-evaluated. No successful live GPT-5.6 semantic-resolution or continuity-analysis result may be claimed.
 - Do not claim Gate G-03 has passed.
 - Do not claim PR #9 is ready to merge.
-- Remaining unresolved blocker groups:
-  - Semantic Project Resolution and Decision Scope Resolution for the bounded competition slice;
+- Semantic Project Resolution and Decision Scope Resolution remain bounded implementation-planning work and prerequisites to stronger claims; the Cursor audit did not classify their absence as a current executable defect.
+- Remaining unresolved blocker and completion groups:
   - conversation routing and grounding;
   - persistence of retained analyses, evidence snapshots, conversation history, the full audit trail, and confirmed analysis revisions;
   - controlled live-model evaluation;
   - final UI-to-bridge-to-OpenAI-to-UI end-to-end coverage;
   - consolidated default-suite network isolation;
   - a packaged demo runner.
-- Next documentation action: create, falsify, and freeze docs/SEMANTIC_PROJECT_AND_DECISION_SCOPE_RESOLUTION_CONTRACT_v0.1.md before any semantic-resolution implementation or live evaluation.
+- The semantic-resolution contract is frozen; its bounded implementation and any live evaluation remain pending.
 - Gate G-03 has not passed. PR #9 is not merge-ready. No merge decision has been made.
+
+## 2026-07-18 Read-Only Cursor Audit
+
+- Audit HEAD: 63ddc6530eb242a41ae0ac920253030cbb6f08fa.
+- The branch was clean before and after the audit. Nothing was staged, committed, or pushed.
+- Full suite: 131 passed.
+- Confirmed blocker groups:
+  - retained-analysis and snapshot persistence;
+  - historical citation hydration from live evidence instead of the retained snapshot;
+  - conversation routing and grounding.
+- Confirmed high-priority gaps:
+  - conversation persistence;
+  - exact attestation-statement extraction;
+  - fake Aurora role mapping by list position.
+- Test-hardening gaps:
+  - default-suite socket isolation;
+  - process-level UTF-8 NDJSON runner test;
+  - supersession and validator negative tests.
+- Semantic Resolution findings were classified as implementation-planning risks, not current defects.
+
+## 2026-07-18 Approved First CC Repair Package
+
+The first approved CC repair package is:
+
+**Retained Analysis Persistence and Snapshot Fidelity**
+
+Its authorized scope is limited to:
+
+- persistence of complete initial `SavedAnalysis` and `EvidenceSnapshot`;
+- snapshot-owned historical citation hydration;
+- transactional saved-analysis persistence;
+- restoration after lock/unlock and in a new `Bridge` instance;
+- prevention of cross-vault in-memory analysis leakage.
+
+Explicitly excluded from that first package:
+
+- conversation routing;
+- conversation persistence;
+- confirmed revision persistence;
+- Semantic Resolution implementation;
+- network isolation;
+- fake Aurora changes;
+- documentation and pitch edits.
+
+## Permanent Pitch Maintenance Rule
+
+Any accepted MVP shortcut, deferred material risk, or change to a public capability claim MUST update `docs/PITCH_DRAFT.md` in the same documentation checkpoint that records the decision.
+
+This rule applies to architectural decisions and accepted deferrals. It does not require pitch edits for ordinary implementation details. A closed risk MUST also be updated or removed from the pitch. No instance may treat `docs/PITCH_DRAFT.md` as optional administrative documentation.
