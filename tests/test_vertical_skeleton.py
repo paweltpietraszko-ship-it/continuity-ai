@@ -192,7 +192,7 @@ def test_prompts_are_versioned_and_clean():
 def test_bridge_utf8_roundtrip(tmp_path: Path):
     cmd={"command":"initialize_vault","path":str(tmp_path/"v"),"password":"sekret","owner_name":"Paweł"}
     assert decode_command(json.dumps(cmd, ensure_ascii=False).encode("utf-8")) == cmd
-    out=encode_response(Bridge().handle(cmd)).decode("utf-8")
+    out=encode_response(Bridge(FakeAuroraProvider()).handle(cmd)).decode("utf-8")
     assert "ok" in out
 
 CITATION_CARD_FIELDS = {
@@ -203,7 +203,8 @@ def _init_and_load(tmp_path: Path, provider=None):
     generate_project_aurora_fixture(tmp_path)
     artifact_root = str(tmp_path / "fixtures/project_aurora/generated/artifacts")
     vault_path = str(tmp_path / "vault.bin")
-    bridge = Bridge(provider=provider)
+    selected_provider = provider if provider is not None else FakeAuroraProvider()
+    bridge = Bridge(provider=selected_provider)
     bridge.handle({"command": "initialize_vault", "path": vault_path, "password": "secret", "owner_name": "Paweł"})
     bridge.handle({"command": "load_project", "artifact_root": artifact_root})
     return bridge, vault_path, artifact_root
@@ -258,7 +259,7 @@ def test_new_bridge_recovers_confirmed_attestation_into_combined_evidence(tmp_pa
     proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
     bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
 
-    recovered = Bridge()
+    recovered = Bridge(FakeAuroraProvider())
     unlock_resp = recovered.handle({"command": "unlock_vault", "path": vault_path, "password": "secret"})
     assert unlock_resp["ok"] is True
     load_resp = recovered.handle({"command": "load_project", "artifact_root": artifact_root})
@@ -324,7 +325,7 @@ def test_send_message_project_grounded_uses_backend_hydrated_citations(tmp_path:
         assert card["exact_text"] == span_texts[card["span_id"]]
 
 def test_analyze_before_load_returns_controlled_error(tmp_path: Path):
-    bridge = Bridge()
+    bridge = Bridge(FakeAuroraProvider())
     resp = bridge.handle({"command": "analyze_project", "question": "q"})
     assert resp["ok"] is False
     assert resp["error"]["code"] == "validation_error"
@@ -332,7 +333,7 @@ def test_analyze_before_load_returns_controlled_error(tmp_path: Path):
     assert resp["error"]["object_id"] is None
 
 def test_confirm_attestation_without_active_vault_returns_controlled_error(tmp_path: Path):
-    bridge = Bridge()
+    bridge = Bridge(FakeAuroraProvider())
     resp = bridge.handle({"command": "confirm_attestation", "proposal_id": "PROP-doesnotexist"})
     assert resp["ok"] is False
     assert resp["error"]["code"] == "vault_locked"
@@ -370,7 +371,7 @@ def test_failed_project_load_preserves_previous_state_and_leaks_nothing(tmp_path
     assert len(bridge.artifact_records) == previous_count
 
 def test_bridge_handles_malformed_commands_safely(tmp_path: Path):
-    bridge = Bridge()
+    bridge = Bridge(FakeAuroraProvider())
     scenarios = [
         "not a dict",
         123,
@@ -643,6 +644,37 @@ def _generic_analysis():
     }
 
 
+class _GenericSentinelProvider:
+    def __init__(self, provider_id='generic-sentinel-provider'):
+        self.provider_id = provider_id
+        self.calls = []
+
+    def analyze(self, evidence, spans, question):
+        self.calls.append((evidence, spans, question))
+        return _generic_analysis()
+
+
+class _FalsyGenericSentinelProvider(_GenericSentinelProvider):
+    def __bool__(self):
+        return False
+
+
+class _NoNetworkResponses:
+    def __init__(self):
+        self.create_calls = 0
+
+    def create(self, **kwargs):
+        self.create_calls += 1
+        raise AssertionError('provider selection must never invoke responses.create')
+
+
+class _NoNetworkOpenAIProvider:
+    provider_id = 'local-openai-sentinel'
+
+    def __init__(self):
+        self.responses = _NoNetworkResponses()
+
+
 class _FakeOpenAIResponse:
     def __init__(self, output_text=None, status='completed', output=()):
         self.status = status
@@ -672,6 +704,219 @@ class _FakeOpenAIClient:
 def _provider(monkeypatch, response=None, error=None):
     monkeypatch.setenv('CONTINUITY_OPENAI_MODEL', 'configured-test-model')
     return OpenAIReasoningProvider(_FakeOpenAIClient(response, error))
+
+
+def test_bridge_missing_provider_configuration_fails_closed(monkeypatch):
+    from continuity_ai.errors import ProviderError
+    from continuity_ai.provider_selection import CONTINUITY_REASONING_PROVIDER
+
+    monkeypatch.delenv(CONTINUITY_REASONING_PROVIDER, raising=False)
+    with pytest.raises(ProviderError):
+        Bridge()
+
+
+def test_blank_provider_configuration_fails_closed(monkeypatch):
+    from continuity_ai.errors import ProviderError
+    from continuity_ai.provider_selection import CONTINUITY_REASONING_PROVIDER
+
+    monkeypatch.setenv(CONTINUITY_REASONING_PROVIDER, '   ')
+    with pytest.raises(ProviderError):
+        Bridge()
+
+
+def test_unsupported_provider_configuration_is_safe(monkeypatch):
+    from continuity_ai.errors import ProviderError
+    from continuity_ai.provider_selection import CONTINUITY_REASONING_PROVIDER
+
+    unsupported = 'private-unsupported-provider-value'
+    monkeypatch.setenv(CONTINUITY_REASONING_PROVIDER, unsupported)
+    with pytest.raises(ProviderError) as caught:
+        Bridge()
+    assert unsupported not in str(caught.value)
+
+
+def test_non_string_provider_configuration_is_safe(monkeypatch):
+    import continuity_ai.provider_selection as selection
+    from continuity_ai.errors import ProviderError
+
+    environment = type('Environment', (), {'get': lambda self, name: object()})()
+    fake_os = type('OS', (), {'environ': environment})()
+    monkeypatch.setattr(selection, 'os', fake_os)
+    with pytest.raises(ProviderError):
+        selection.create_reasoning_provider()
+
+
+def test_explicit_fake_provider_selection_is_normalized_and_new(monkeypatch):
+    from continuity_ai.provider_selection import (
+        CONTINUITY_REASONING_PROVIDER,
+        create_reasoning_provider,
+    )
+
+    monkeypatch.setenv(CONTINUITY_REASONING_PROVIDER, '  FaKe_AuRoRa  ')
+    first = create_reasoning_provider()
+    second = create_reasoning_provider()
+    assert isinstance(first, FakeAuroraProvider)
+    assert isinstance(second, FakeAuroraProvider)
+    assert first is not second
+
+
+def test_fake_selection_never_constructs_openai_provider_or_sdk(monkeypatch):
+    import openai
+    import continuity_ai.provider_selection as selection
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('OpenAI construction is forbidden for fake selection')
+
+    monkeypatch.setenv(selection.CONTINUITY_REASONING_PROVIDER, 'fake_aurora')
+    monkeypatch.setattr(selection, 'OpenAIReasoningProvider', forbidden)
+    monkeypatch.setattr(openai, 'OpenAI', forbidden)
+    assert isinstance(selection.create_reasoning_provider(), FakeAuroraProvider)
+
+
+def test_openai_provider_selection_is_normalized_and_constructed_once(monkeypatch):
+    import continuity_ai.provider_selection as selection
+
+    sentinel = _NoNetworkOpenAIProvider()
+    constructions = []
+
+    def construct():
+        constructions.append(True)
+        return sentinel
+
+    monkeypatch.setenv(selection.CONTINUITY_REASONING_PROVIDER, '  OpEnAi  ')
+    monkeypatch.setattr(selection, 'OpenAIReasoningProvider', construct)
+    assert selection.create_reasoning_provider() is sentinel
+    assert constructions == [True]
+    assert sentinel.responses.create_calls == 0
+
+
+def test_provider_selection_never_invokes_responses_create(monkeypatch):
+    import continuity_ai.provider_selection as selection
+
+    sentinel = _NoNetworkOpenAIProvider()
+    monkeypatch.setenv(selection.CONTINUITY_REASONING_PROVIDER, 'openai')
+    monkeypatch.setattr(
+        selection, 'OpenAIReasoningProvider', lambda: sentinel
+    )
+    assert selection.create_reasoning_provider() is sentinel
+    assert sentinel.responses.create_calls == 0
+
+
+def test_injected_provider_precedes_invalid_configuration(monkeypatch):
+    from continuity_ai.provider_selection import CONTINUITY_REASONING_PROVIDER
+
+    injected = _GenericSentinelProvider()
+    monkeypatch.setenv(
+        CONTINUITY_REASONING_PROVIDER, 'invalid-provider-must-not-be-read'
+    )
+    bridge = Bridge(injected)
+    assert bridge.provider is injected
+
+
+def test_falsy_injected_provider_is_stored_and_used_exactly(monkeypatch):
+    from continuity_ai.provider_selection import CONTINUITY_REASONING_PROVIDER
+
+    injected = _FalsyGenericSentinelProvider('falsy-injected-provider')
+    monkeypatch.setenv(CONTINUITY_REASONING_PROVIDER, 'invalid-provider')
+    bridge = Bridge(injected)
+    records, _ = _generic_provider_world()
+    bridge.records = records
+
+    response = bridge.handle({'command': 'analyze_project', 'question': 'q'})
+
+    assert bridge.provider is injected
+    assert len(injected.calls) == 1
+    assert response['ok'] is True
+    assert bridge.snapshot.provider_id == injected.provider_id
+
+
+def _install_generic_reasoning_inputs(monkeypatch, reasoning_module):
+    records, _ = _generic_provider_world()
+    monkeypatch.setattr(
+        reasoning_module, 'validate_production_artifact_root', lambda root: None
+    )
+    monkeypatch.setattr(reasoning_module, 'ingest_artifacts', lambda root: records)
+    monkeypatch.setattr(
+        reasoning_module, 'artifact_to_reasoning', lambda record: record
+    )
+    monkeypatch.setattr(
+        reasoning_module, 'order_evidence', lambda supplied: tuple(supplied)
+    )
+
+
+def test_answer_morning_question_uses_injected_provider_without_configuration(
+    monkeypatch,
+):
+    import continuity_ai.reasoning as reasoning_module
+    from continuity_ai.provider_selection import CONTINUITY_REASONING_PROVIDER
+
+    injected = _GenericSentinelProvider('injected-morning-provider')
+    monkeypatch.setenv(CONTINUITY_REASONING_PROVIDER, 'invalid-provider')
+    monkeypatch.setattr(
+        reasoning_module,
+        'create_reasoning_provider',
+        lambda: (_ for _ in ()).throw(
+            AssertionError('configuration must not be consulted')
+        ),
+    )
+    _install_generic_reasoning_inputs(monkeypatch, reasoning_module)
+
+    result = reasoning_module.answer_morning_question(
+        Path('unused-local-root'), 'Which entrance is current?', injected
+    )
+
+    assert len(injected.calls) == 1
+    assert set(result) == {
+        'analysis_status',
+        'continuity_break_kind',
+        'continuity_break',
+        'required_evidence',
+        'next_action',
+    }
+    assert result['analysis_status'] == 'break_found'
+
+
+def test_answer_morning_question_without_injection_fails_closed(monkeypatch):
+    import continuity_ai.reasoning as reasoning_module
+    from continuity_ai.errors import ProviderError
+    from continuity_ai.provider_selection import CONTINUITY_REASONING_PROVIDER
+
+    monkeypatch.delenv(CONTINUITY_REASONING_PROVIDER, raising=False)
+    monkeypatch.setattr(
+        reasoning_module,
+        'validate_production_artifact_root',
+        lambda root: (_ for _ in ()).throw(
+            AssertionError('selection must fail before artifact access')
+        ),
+    )
+    with pytest.raises(ProviderError):
+        reasoning_module.answer_morning_question(Path('unused-local-root'), 'q')
+
+
+def test_openai_selected_bridge_runs_analysis_and_snapshots_provider(monkeypatch):
+    import continuity_ai.provider_selection as selection
+
+    selected = _GenericSentinelProvider('selected-openai-sentinel')
+    constructions = []
+
+    def construct():
+        constructions.append(True)
+        return selected
+
+    monkeypatch.setenv(selection.CONTINUITY_REASONING_PROVIDER, 'openai')
+    monkeypatch.setattr(selection, 'OpenAIReasoningProvider', construct)
+    bridge = Bridge()
+    records, _ = _generic_provider_world()
+    bridge.records = records
+
+    response = bridge.handle({'command': 'analyze_project', 'question': 'q'})
+
+    assert constructions == [True]
+    assert bridge.provider is selected
+    assert len(selected.calls) == 1
+    assert response['ok'] is True
+    assert response['data']['provider_id'] == selected.provider_id
+    assert bridge.snapshot.provider_id == selected.provider_id
 
 
 def test_openai_adapter_complete_exact_request_contract(monkeypatch):
@@ -1083,7 +1328,7 @@ def test_public_messages_are_human_and_bridge_does_not_leak_internal_names(tmp_p
         assert serialized["object_id"] is None
     assert ValidationError().to_dict()["code"] == "validation_error"
     assert VaultAlreadyExistsError().to_dict()["code"] == "vault_already_exists"
-    resp=Bridge().handle({"command":"unlock_vault","path":str(tmp_path/"missing"),"password":"wrong"})
+    resp=Bridge(FakeAuroraProvider()).handle({"command":"unlock_vault","path":str(tmp_path/"missing"),"password":"wrong"})
     body=json.dumps(resp, ensure_ascii=False)
     assert resp["ok"] is False
     assert set(resp["error"].keys()) == {"code", "message", "object_id"}

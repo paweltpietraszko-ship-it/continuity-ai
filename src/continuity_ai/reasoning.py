@@ -4,12 +4,14 @@ from pathlib import Path
 from continuity_ai.artifact_io import validate_production_artifact_root
 from continuity_ai.ingestion import ingest_artifacts
 from continuity_ai.evidence import artifact_to_reasoning, order_evidence
-from continuity_ai.reasoning_pipeline import FakeAuroraProvider, run_analysis
+from continuity_ai.provider_selection import create_reasoning_provider
+from continuity_ai.reasoning_pipeline import run_analysis
 class ReasoningPipelineNotImplementedError(NotImplementedError): pass
-def answer_morning_question(project_root: Path, question: str) -> dict[str, object]:
+def answer_morning_question(project_root: Path, question: str, provider=None) -> dict[str, object]:
+    selected_provider = provider if provider is not None else create_reasoning_provider()
     validate_production_artifact_root(project_root)
     records=order_evidence(tuple(artifact_to_reasoning(r) for r in ingest_artifacts(project_root)))
-    result, spans, snapshot = run_analysis(records, question, FakeAuroraProvider())
+    result, spans, snapshot = run_analysis(records, question, selected_provider)
     required=[]
     for gs in (result.continuity_break, result.next_action):
         if gs:

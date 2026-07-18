@@ -8,7 +8,8 @@ from continuity_ai.domain import AuthenticatedUserAttestation
 from continuity_ai.errors import PublicError, ValidationError, VaultLockedError
 from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, hydrate_citations
 from continuity_ai.ingestion import ingest_artifacts
-from continuity_ai.reasoning_pipeline import FakeAuroraProvider, run_analysis
+from continuity_ai.provider_selection import create_reasoning_provider
+from continuity_ai.reasoning_pipeline import run_analysis
 from continuity_ai.vault import Vault
 
 
@@ -21,7 +22,7 @@ class Bridge:
         self.analysis = None
         self.snapshot = None
         self.last_question: str | None = None
-        self.provider = provider or FakeAuroraProvider()
+        self.provider = provider if provider is not None else create_reasoning_provider()
 
     def handle(self, cmd) -> dict:
         command_name = cmd.get("command") if isinstance(cmd, dict) else None
