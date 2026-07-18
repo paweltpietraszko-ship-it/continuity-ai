@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 Provenance = Literal["artifact", "authenticated_user_attestation"]
+PROVENANCE_VALUES: frozenset[str] = frozenset({"artifact", "authenticated_user_attestation"})
 Role = Literal["approved_decision", "reflects_decision", "conflicts_with_decision", "none"]
 Status = Literal["break_found", "no_material_break_found"]
 BreakKind = Literal["propagation_break", "decision_provenance_not_found"]
@@ -64,7 +65,10 @@ class EvidenceSnapshot:
 
 @dataclass(frozen=True)
 class SavedAnalysis:
-    analysis_id: str; created_at: str; result: AnalysisResult; evidence_snapshot: EvidenceSnapshot
+    analysis_id: str; created_at: str; result: AnalysisResult; evidence_snapshot: EvidenceSnapshot; question: str
+    def __post_init__(self) -> None:
+        if not self.question.strip():
+            raise ValueError("a retained analysis must persist its non-empty original question")
 
 @dataclass(frozen=True)
 class OwnerProfile:

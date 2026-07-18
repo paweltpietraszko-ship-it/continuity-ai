@@ -49,51 +49,76 @@ class FakeDecisionProvenanceProvider:
             "next_action": {"statement": "Add or link the decision that approved this change before treating the new value as current.", "span_ids": [by_ev[ids[0]][0], by_ev[ids[1]][0]]},
         }
 
-def _gs(obj: Any) -> GroundedStatement:
+SUPPORTED_SCHEMA_VERSION = "2.0"
+STATUSES = {"break_found", "no_material_break_found"}
+BREAK_KINDS = {"propagation_break", "decision_provenance_not_found"}
+ROLES = {"approved_decision", "reflects_decision", "conflicts_with_decision", "none"}
+_RESULT_KEYS = {"schema_version", "analysis_status", "continuity_break_kind", "current_state", "semantic_annotations", "continuity_break", "next_action"}
+_ANNOTATION_KEYS = {"evidence_id", "propagation_role", "context_tags"}
+
+def _grounded_statement(obj: Any) -> GroundedStatement:
+    """Structural shape only; span ownership is checked separately against whichever
+    evidence/span identity the caller is authoritative for."""
     if not isinstance(obj, dict) or set(obj) != {"statement", "span_ids"}: raise ValidationError()
     if not isinstance(obj["statement"], str) or not obj["statement"].strip(): raise ValidationError()
     spans = tuple(obj["span_ids"])
     if not spans or not all(isinstance(s, str) for s in spans): raise ValidationError()
     return GroundedStatement(obj["statement"], spans)
 
-def validate_analysis(candidate: dict[str, Any], evidence, spans) -> AnalysisResult:
-    if set(candidate) != {"schema_version", "analysis_status", "continuity_break_kind", "current_state", "semantic_annotations", "continuity_break", "next_action"}: raise ValidationError()
-    if candidate["schema_version"] != "2.0": raise ValidationError()
+def _span_owners(gs: GroundedStatement, span_owner: dict[str, str], evidence_ids: set[str]) -> set[str]:
+    parents: set[str] = set()
+    for sid in gs.span_ids:
+        owner = span_owner.get(sid)
+        if owner is None or owner not in evidence_ids: raise ValidationError()
+        parents.add(owner)
+    return parents
+
+def validate_analysis_payload(candidate: dict[str, Any], evidence_ids: set[str], span_owner: dict[str, str]) -> AnalysisResult:
+    """The single canonical implementation of semantic AnalysisResult rules.
+
+    Operates on authoritative evidence IDs and a span-ID-to-evidence-ID ownership map
+    rather than live domain objects, so the exact same rules apply whether `candidate`
+    is fresh provider output or a restored retained-analysis payload."""
+    if set(candidate) != _RESULT_KEYS: raise ValidationError()
+    if candidate["schema_version"] != SUPPORTED_SCHEMA_VERSION: raise ValidationError()
     status = candidate["analysis_status"]
-    if status not in {"break_found", "no_material_break_found"}: raise ValidationError()
+    if status not in STATUSES: raise ValidationError()
     kind = candidate["continuity_break_kind"]
-    if status == "break_found" and kind not in {"propagation_break", "decision_provenance_not_found"}: raise ValidationError()
+    if status == "break_found" and kind not in BREAK_KINDS: raise ValidationError()
     if status == "no_material_break_found" and kind is not None: raise ValidationError()
-    span_map = {s.span_id: s for s in spans}; ev_ids = {e.evidence_id for e in evidence}
-    def check(gs: GroundedStatement) -> set[str]:
-        parents: set[str] = set()
-        for sid in gs.span_ids:
-            if sid not in span_map or span_map[sid].evidence_id not in ev_ids: raise ValidationError()
-            parents.add(span_map[sid].evidence_id)
-        return parents
-    current = _gs(candidate["current_state"]); check(current)
-    br = None if candidate["continuity_break"] is None else _gs(candidate["continuity_break"])
-    na = None if candidate["next_action"] is None else _gs(candidate["next_action"])
+
+    current = _grounded_statement(candidate["current_state"])
+    _span_owners(current, span_owner, evidence_ids)
+    br = None if candidate["continuity_break"] is None else _grounded_statement(candidate["continuity_break"])
+    na = None if candidate["next_action"] is None else _grounded_statement(candidate["next_action"])
     if status == "break_found" and (br is None or na is None): raise ValidationError()
     if status == "no_material_break_found" and (br is not None or na is not None): raise ValidationError()
-    br_parents = check(br) if br else set()
-    if na: check(na)
-    anns=[]; seen=set(); roles=[]
+    br_parents = _span_owners(br, span_owner, evidence_ids) if br else set()
+    if na: _span_owners(na, span_owner, evidence_ids)
+
+    annotations: list[SemanticAnnotation] = []; seen: set[str] = set(); roles: list[str] = []
     for a in candidate["semantic_annotations"]:
-        if set(a) != {"evidence_id", "propagation_role", "context_tags"}: raise ValidationError()
-        if a["evidence_id"] not in ev_ids or a["evidence_id"] in seen: raise ValidationError()
-        if a["propagation_role"] not in {"approved_decision", "reflects_decision", "conflicts_with_decision", "none"}: raise ValidationError()
+        if not isinstance(a, dict) or set(a) != _ANNOTATION_KEYS: raise ValidationError()
+        if a["evidence_id"] not in evidence_ids or a["evidence_id"] in seen: raise ValidationError()
+        if a["propagation_role"] not in ROLES: raise ValidationError()
         if any(t != "urgency" for t in a["context_tags"]): raise ValidationError()
         seen.add(a["evidence_id"]); roles.append(a["propagation_role"])
-        anns.append(SemanticAnnotation(a["evidence_id"], a["propagation_role"], tuple(a["context_tags"])))
-    if seen != ev_ids: raise ValidationError()
+        annotations.append(SemanticAnnotation(a["evidence_id"], a["propagation_role"], tuple(a["context_tags"])))
+    if seen != evidence_ids: raise ValidationError()
     if status == "break_found" and kind == "propagation_break" and ("approved_decision" not in roles or "conflicts_with_decision" not in roles): raise ValidationError()
     if status == "break_found" and kind == "decision_provenance_not_found" and ("approved_decision" in roles or len(br_parents) < 2): raise ValidationError()
     if status == "no_material_break_found" and ("conflicts_with_decision" in roles or kind is not None): raise ValidationError()
-    return AnalysisResult("2.0", status, kind, current, tuple(anns), br, na)
+    return AnalysisResult(SUPPORTED_SCHEMA_VERSION, status, kind, current, tuple(annotations), br, na)
+
+def validate_analysis(candidate: dict[str, Any], evidence, spans) -> AnalysisResult:
+    """Wrapper deriving authoritative evidence/span identity from live domain objects,
+    then delegating to the canonical validator shared with retained-analysis restoration."""
+    evidence_ids = {e.evidence_id for e in evidence}
+    span_owner = {s.span_id: s.evidence_id for s in spans}
+    return validate_analysis_payload(candidate, evidence_ids, span_owner)
 
 def run_analysis(records, question: str, provider: ReasoningProvider):
     spans = build_spans(records)
     result = validate_analysis(provider.analyze(records, spans, question), records, spans)
-    snapshot = make_snapshot("AN-" + uuid.uuid4().hex, records, spans, "g03_reasoning_v2", "2.0", provider.provider_id)
+    snapshot = make_snapshot("AN-" + uuid.uuid4().hex, records, spans, "g03_reasoning_v2", SUPPORTED_SCHEMA_VERSION, provider.provider_id)
     return result, spans, snapshot

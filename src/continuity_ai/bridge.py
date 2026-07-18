@@ -4,12 +4,13 @@ import json
 from pathlib import Path
 from dataclasses import asdict, is_dataclass
 from continuity_ai import conversation
-from continuity_ai.domain import AuthenticatedUserAttestation
+from continuity_ai.domain import AuthenticatedUserAttestation, SavedAnalysis
 from continuity_ai.errors import PublicError, ValidationError, VaultLockedError
-from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, hydrate_citations
+from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, hydrate_citations, hydrate_snapshot_citations, snapshot_citation_statuses
 from continuity_ai.ingestion import ingest_artifacts
 from continuity_ai.provider_selection import create_reasoning_provider
 from continuity_ai.reasoning_pipeline import run_analysis
+from continuity_ai.retained_analysis import RETAINED_ANALYSIS_NONE, RETAINED_ANALYSIS_VALID, restore_latest
 from continuity_ai.vault import Vault
 
 
@@ -22,6 +23,7 @@ class Bridge:
         self.analysis = None
         self.snapshot = None
         self.last_question: str | None = None
+        self.retained_analysis_status: str = RETAINED_ANALYSIS_NONE
         self.provider = provider if provider is not None else create_reasoning_provider()
 
     def handle(self, cmd) -> dict:
@@ -53,7 +55,7 @@ class Bridge:
             self.vault = candidate
             self.records = candidate_records
             self.spans = candidate_spans
-            self._invalidate_analysis()
+            self._restore_from_vault()
             return {"session_id": session.session_id}
 
         if name == "unlock_vault":
@@ -64,15 +66,13 @@ class Bridge:
             except Exception:
                 candidate.lock()
                 raise
-            previous_records = self.records
             previous_vault = self.vault
             if previous_vault is not None:
                 previous_vault.lock()
             self.vault = candidate
             self.records = candidate_records
             self.spans = candidate_spans
-            if self.records != previous_records:
-                self._invalidate_analysis()
+            self._restore_from_vault()
             return {"session_id": session.session_id}
 
         if name == "lock_vault":
@@ -92,21 +92,40 @@ class Bridge:
             self.artifact_records = new_artifact_records
             self.records = candidate_records
             self.spans = candidate_spans
-            self._invalidate_analysis()
+            # A retained analysis is bound to its own encrypted snapshot, not to
+            # whatever project evidence happens to be loaded right now: reloading
+            # current evidence re-restores it from the same active vault rather than
+            # discarding it (F-05). Citation source status is recomputed against the
+            # newly loaded evidence the next time cards are hydrated.
+            self._restore_from_vault()
             return {"artifact_evidence_count": len(self.artifact_records), "evidence_count": len(self.records)}
 
         if name == "analyze_project":
             if not self.records:
                 raise ValidationError()
             question = cmd.get("question", "")
-            if not isinstance(question, str):
+            if not isinstance(question, str) or not question.strip():
                 raise ValidationError()
             result, spans, snapshot = run_analysis(self.records, question, self.provider)
+            saved = SavedAnalysis(snapshot.analysis_id, snapshot.created_at, result, snapshot, question)
+            persisted = False
+            if self.vault is not None:
+                try:
+                    self.vault.require()
+                except VaultLockedError:
+                    pass
+                else:
+                    self.vault.save_initial_analysis(saved)
+                    persisted = True
             self.analysis = result
             self.spans = spans
             self.snapshot = snapshot
             self.last_question = question
-            cards = hydrate_citations(_citation_span_ids(result), self.records, self.spans)
+            # An analysis without an unlocked vault is a real in-memory result, but it
+            # was never retained: reporting "valid" here would falsely describe an
+            # ephemeral analysis as persisted (F-11).
+            self.retained_analysis_status = RETAINED_ANALYSIS_VALID if persisted else RETAINED_ANALYSIS_NONE
+            cards = self._hydrate_retained_cards(saved, result)
             return {**_analysis_fields(result), "citation_cards": cards, **_snapshot_fields(snapshot)}
 
         if name == "send_message":
@@ -163,13 +182,14 @@ class Bridge:
                 "artifact_evidence_count": len(self.artifact_records),
                 "evidence_count": len(self.records),
                 "has_analysis": self.analysis is not None,
+                "retained_analysis_status": self.retained_analysis_status,
                 "pending_attestation_count": pending_attestation_count,
                 "pending_revision_count": pending_revision_count,
             }
-            if self.analysis is not None:
-                cards = hydrate_citations(_citation_span_ids(self.analysis), self.records, self.spans)
+            if self.analysis is not None and self.snapshot is not None and self.last_question:
+                saved = SavedAnalysis(self.snapshot.analysis_id, self.snapshot.created_at, self.analysis, self.snapshot, self.last_question)
                 data.update(_analysis_fields(self.analysis))
-                data["citation_cards"] = cards
+                data["citation_cards"] = self._hydrate_retained_cards(saved, self.analysis)
             return data
 
         raise PublicError("unknown_command", "The command is not supported.")
@@ -177,10 +197,40 @@ class Bridge:
     def _refresh_evidence(self) -> None:
         self.records, self.spans = _compose_evidence(self.artifact_records, self.vault)
 
+    def _hydrate_retained_cards(self, saved: SavedAnalysis, result) -> tuple:
+        """Historical citation text and metadata always come from the retained
+        snapshot. Only the per-card source-status label is recomputed against
+        whatever live evidence is currently loaded, so drift is surfaced without
+        ever rewriting the retained quotation (F-04)."""
+        statuses = snapshot_citation_statuses(saved.evidence_snapshot.records, self.records)
+        return hydrate_snapshot_citations(saved, _citation_span_ids(result), statuses)
+
     def _invalidate_analysis(self) -> None:
         self.analysis = None
         self.snapshot = None
         self.last_question = None
+        self.retained_analysis_status = RETAINED_ANALYSIS_NONE
+
+    def _restore_from_vault(self) -> None:
+        """Clear any previous vault's in-memory analysis, then restore only the
+        newest retained analysis in the now-active vault if it is valid. Record
+        equality with a prior vault is never treated as proof of vault identity,
+        and a malformed newest entry never falls back to an older one."""
+        self._invalidate_analysis()
+        if self.vault is None:
+            return
+        try:
+            self.vault.require()
+        except VaultLockedError:
+            return
+        restoration = restore_latest(self.vault.payload.get("saved_analyses", []))
+        self.retained_analysis_status = restoration.status
+        if restoration.status != RETAINED_ANALYSIS_VALID:
+            return
+        saved = restoration.saved
+        self.analysis = saved.result
+        self.snapshot = saved.evidence_snapshot
+        self.last_question = saved.question
 
 
 def _compose_evidence(artifact_records: tuple, candidate_vault) -> tuple[tuple, tuple]:

@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Any
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from continuity_ai.domain import AuditEvent, AttestationProposal, AnalysisRevisionProposal, AuthenticatedUserAttestation, OwnerProfile, VaultSession, utc_now
+from continuity_ai.domain import AuditEvent, AttestationProposal, AnalysisRevisionProposal, AuthenticatedUserAttestation, OwnerProfile, SavedAnalysis, VaultSession, utc_now
 from continuity_ai.errors import VaultAuthError, VaultLockedError, ValidationError, VaultAlreadyExistsError
+from continuity_ai.retained_analysis import saved_analysis_from_payload, saved_analysis_to_payload
 
 FORMAT="continuity-ai-vault"; VERSION=1
 KDF={"algorithm":"argon2id","time_cost":3,"memory_cost":65536,"parallelism":4,"hash_len":32,"version":19}
@@ -102,3 +103,19 @@ class Vault:
         a=AuthenticatedUserAttestation(eid, owner["actor_id"], owner["display_name"], utc_now(), "text", p.statement, p.supersedes_evidence_id)
         self.payload["attestations"].append(a.__dict__); self.payload["audit_events"].append(AuditEvent("AUD-"+uuid.uuid4().hex,"attestation_committed",owner["actor_id"],utc_now(),eid,True).__dict__); self.persist()
         del self.pending_attestations[proposal_id]; return a
+    def save_initial_analysis(self, saved: SavedAnalysis) -> None:
+        """Transactionally persist a complete retained analysis:
+        1. serialize the retained unit and re-validate the exact bytes that would be
+           persisted, so a latent serialization defect fails before anything is written;
+        2. build a copy-on-write candidate payload (the current payload is never mutated);
+        3. encrypt and atomically write the candidate;
+        4. only after the write succeeds, publish the candidate as the active payload.
+        Any failure at any step leaves the previous payload and encrypted file untouched."""
+        session=self.require()
+        record=saved_analysis_to_payload(saved)
+        saved_analysis_from_payload(record)
+        candidate=dict(self.payload)
+        candidate["saved_analyses"]=list(self.payload["saved_analyses"])+[record]
+        env=json.loads(self.path.read_text("utf-8")); salt=_ub64(env["salt"])
+        _write(self.path,_encrypt(candidate, bytes(session.key_buffer), salt))
+        self.payload=candidate

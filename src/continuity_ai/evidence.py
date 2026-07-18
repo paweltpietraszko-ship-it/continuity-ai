@@ -5,9 +5,21 @@ from datetime import datetime, timezone
 from continuity_ai.domain import AuthenticatedUserAttestation, CitationCard, EvidenceSnapshot, ReasoningEvidence, EvidenceSpan, SavedAnalysis, utc_now
 from continuity_ai.models import EvidenceRecord
 
+SNAPSHOT_SOURCE_STATUS = "snapshot"
+SOURCE_CHANGED_STATUS = "source_changed_since_analysis"
+
 def _norm_ts(ts: str) -> str:
     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+def is_valid_timestamp(ts: object) -> bool:
+    if not isinstance(ts, str):
+        return False
+    try:
+        datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        return False
 
 def artifact_to_reasoning(record: EvidenceRecord) -> ReasoningEvidence:
     return ReasoningEvidence(record.evidence_id, record.source_type, record.author, _norm_ts(record.timestamp), record.title, record.content, "artifact", record.uri, record.artifact_sha256)
@@ -50,19 +62,36 @@ def hydrate_citations(span_ids: tuple[str, ...], records: tuple[ReasoningEvidenc
         cards.append(CitationCard(r.evidence_id, sid, sp.text, r.title, r.author_or_actor, r.timestamp, r.source_type, r.provenance, status))
     return tuple(cards)
 
-def hydrate_snapshot_citations(saved: SavedAnalysis, span_ids: tuple[str, ...]) -> tuple[CitationCard, ...]:
+def snapshot_citation_statuses(evidence_snapshot_records: tuple[dict, ...], live: tuple[ReasoningEvidence, ...]) -> dict[str, str]:
+    """Per-evidence-id source status for retained citations, computed against
+    whatever live evidence is currently loaded.
+
+    When no live evidence is loaded at all, no comparison is honestly possible, so
+    every record keeps the neutral retained status rather than a fabricated claim."""
+    if not live:
+        return {str(r["evidence_id"]): SNAPSHOT_SOURCE_STATUS for r in evidence_snapshot_records}
+    live_hash = {r.evidence_id: content_sha256(r.content) for r in live}
+    statuses: dict[str, str] = {}
+    for r in evidence_snapshot_records:
+        eid = str(r["evidence_id"])
+        matches = live_hash.get(eid) == r["canonical_content_sha256"]
+        statuses[eid] = SNAPSHOT_SOURCE_STATUS if matches else SOURCE_CHANGED_STATUS
+    return statuses
+
+def hydrate_snapshot_citations(saved: SavedAnalysis, span_ids: tuple[str, ...], status_by_evidence_id: dict[str, str] | None = None) -> tuple[CitationCard, ...]:
     records = {str(r["evidence_id"]): r for r in saved.evidence_snapshot.records}
     spans = {s["span_id"]: s for s in saved.evidence_snapshot.spans}
-    cards=[]
+    cards = []
     for sid in span_ids:
         if sid not in spans: raise ValueError("incomplete snapshot")
-        sp=spans[sid]; rec=records[sp["evidence_id"]]
-        cards.append(CitationCard(str(rec["evidence_id"]), sid, sp["exact_text"], str(rec["title"]), str(rec["author_or_actor"]), str(rec["timestamp"]), str(rec["source_type"]), rec["provenance"], "snapshot"))
+        sp = spans[sid]; rec = records[sp["evidence_id"]]
+        status = SNAPSHOT_SOURCE_STATUS if status_by_evidence_id is None else status_by_evidence_id.get(str(rec["evidence_id"]), SNAPSHOT_SOURCE_STATUS)
+        cards.append(CitationCard(str(rec["evidence_id"]), sid, sp["exact_text"], str(rec["title"]), str(rec["author_or_actor"]), str(rec["timestamp"]), str(rec["source_type"]), rec["provenance"], status))
     return tuple(cards)
 
 def compare_live_to_snapshot(saved: SavedAnalysis, live: tuple[ReasoningEvidence, ...]) -> str:
     live_hash = {r.evidence_id: content_sha256(r.content) for r in live}
     for r in saved.evidence_snapshot.records:
         if live_hash.get(str(r["evidence_id"])) != r["canonical_content_sha256"]:
-            return "source_changed_since_analysis"
+            return SOURCE_CHANGED_STATUS
     return "current"

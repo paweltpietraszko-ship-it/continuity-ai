@@ -23,7 +23,7 @@ def test_spans_snapshot_and_changed_source(tmp_path: Path):
     records=aurora(tmp_path); spans=build_spans(records)
     assert spans and spans[0].span_id.endswith("L001")
     result, spans, snap=run_analysis(records,"q",FakeAuroraProvider())
-    saved=SavedAnalysis(snap.analysis_id, snap.created_at, result, snap)
+    saved=SavedAnalysis(snap.analysis_id, snap.created_at, result, snap, "q")
     cards=hydrate_snapshot_citations(saved, result.current_state.span_ids)
     assert cards[0].exact_text
     mutated=list(records); r=mutated[0]; mutated[0]=type(r)(r.evidence_id,r.source_type,r.author_or_actor,r.timestamp,r.title,r.content+" changed",r.provenance,r.uri,r.artifact_sha256)
@@ -575,9 +575,13 @@ def test_successful_unlock_replacement_invalidates_old_session_and_refreshes_att
     assert old_vault.pending_attestations == {}
     assert bridge.vault is not old_vault
     assert len(bridge.records) == 7
-    assert bridge.analysis is None
-    assert bridge.snapshot is None
-    assert bridge.last_question is None
+    # The retained initial analysis (persisted during the first analyze_project call,
+    # before any attestation) is restored from encrypted storage on unlock. It is not
+    # rewritten by the out-of-band attestations added directly through the vault.
+    assert bridge.analysis is not None
+    assert bridge.analysis.analysis_status == "break_found"
+    assert bridge.snapshot is not None
+    assert bridge.last_question == "q"
 
 class _FailIfCalledProvider:
     provider_id = "fail-if-called-v1"
