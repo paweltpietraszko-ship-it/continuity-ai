@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from continuity_ai.errors import ValidationError
+from continuity_ai.source_scoping.approved_scope_validator import (
+    validate_approved_scope_against_evidence,
+)
 from continuity_ai.source_scoping.domain import (
     ApprovedSourceScope,
     ReviewedSourceDecision,
@@ -77,7 +80,7 @@ def approve_source_scope(
             decision.evidence_id
         )
 
-    return ApprovedSourceScope(
+    scope = ApprovedSourceScope(
         schema_version=SCHEMA_VERSION,
         scope_id="SCOPE-" + uuid.uuid4().hex,
         target_project=result.target_project,
@@ -90,6 +93,8 @@ def approve_source_scope(
         ),
         created_at=_utc_now(),
     )
+    validate_approved_scope_against_evidence(scope, evidence)
+    return scope
 
 
 def select_approved_evidence(
@@ -97,10 +102,6 @@ def select_approved_evidence(
     evidence: tuple[Any, ...],
 ) -> tuple[Any, ...]:
     """Return approved records only when the reviewed snapshot still matches."""
-    live_fingerprints = tuple(
-        (record.evidence_id, evidence_fingerprint(record)) for record in evidence
-    )
-    if live_fingerprints != scope.evidence_fingerprints:
-        raise ValidationError()
+    validate_approved_scope_against_evidence(scope, evidence)
     approved = set(scope.approved_evidence_ids)
     return tuple(record for record in evidence if record.evidence_id in approved)
