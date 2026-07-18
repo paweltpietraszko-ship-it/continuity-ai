@@ -11,7 +11,7 @@ from continuity_ai.ingestion import ingest_artifacts, read_project_name
 from continuity_ai.provider_selection import create_reasoning_provider
 from continuity_ai.reasoning_pipeline import run_analysis
 from continuity_ai.retained_analysis import RETAINED_ANALYSIS_NONE, RETAINED_ANALYSIS_VALID, restore_latest
-from continuity_ai.source_scoping.bridge_adapter import STATUS_APPROVED, STATUS_NONE, SourceScopingSession
+from continuity_ai.source_scoping.bridge_adapter import STATUS_APPROVED, STATUS_LOCKED, STATUS_NONE, SourceScopingSession
 from continuity_ai.vault import Vault
 
 
@@ -81,7 +81,7 @@ class Bridge:
             self.artifact_evidence_records = ()
             self.records = candidate_records
             self.spans = candidate_spans
-            self.source_scoping.reset()
+            self.source_scoping.after_unlock()
             self._restore_from_vault(clear_project=True)
             return {"session_id": session.session_id, "owner_display_name": candidate.payload["owner"]["display_name"]}
 
@@ -89,9 +89,13 @@ class Bridge:
             if self.vault is None:
                 raise VaultLockedError()
             self.vault.lock()
-            self.source_scoping.reset()
-            self.records = self.artifact_records
-            self.spans = build_spans(self.artifact_records)
+            self.source_scoping.lock()
+            if self.source_scoping.status == STATUS_LOCKED:
+                self.records = ()
+                self.spans = ()
+            else:
+                self.records = self.artifact_records
+                self.spans = build_spans(self.artifact_records)
             self._invalidate_analysis()
             return {"locked": True}
 
@@ -115,8 +119,10 @@ class Bridge:
                 if not self._analysis_matches_live_evidence():
                     self._invalidate_analysis()
             elif self.source_scoping.status != STATUS_NONE:
-                # A malformed or stale persisted scope blocks downstream reasoning and
-                # must not leave a retained report visible as if its source set were valid.
+                # A malformed, locked, or stale scope blocks downstream reasoning and
+                # must not leave a retained report visible against an invalid source set.
+                self.records = ()
+                self.spans = ()
                 self._invalidate_analysis()
             return {
                 "project": self.project,
@@ -179,6 +185,7 @@ class Bridge:
             return {"project": self.project, **_analysis_fields(result), "citation_cards": cards, **_snapshot_fields(snapshot)}
 
         if name == "send_message":
+            self._refresh_evidence()
             message = cmd["message"]
             revision_candidate = cmd.get("revision_candidate")
             return conversation.send_message(
