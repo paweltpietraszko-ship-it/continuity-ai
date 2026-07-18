@@ -210,3 +210,43 @@
 - Network boundary: provider selection itself does not call the network, and importing the module does not call the network.
 - Integration behavior: Bridge without injection requires explicit configuration, while answer_morning_question uses the shared provider factory when no provider is injected.
 - Provider status: FakeAuroraProvider remains an explicitly selected test/demo provider only. It is not production reasoning and is not evidence of GPT-5.6 operation.
+
+## 2026-07-18 Semantic Project and Decision-Scope Resolution Blocker
+
+- Architectural correction: the existing vertical skeleton analyzes a user-selected, already grouped Project Aurora workspace. It does not yet prove that naturally varied references such as “Project Aurora,” “Aurora,” “Mara’s film,” “the Northlight shoot,” “the production,” or “the current project” resolve to the same canonical project.
+- Decision-scope gap: the existing skeleton does not yet resolve whether a decision about a product family applies to Mobile, Desktop, both variants, the whole family, or remains ambiguous.
+- Blocker status: Semantic Project Resolution and Decision Scope Resolution are blockers of the strong product claim that Continuity AI reconstructs project state from scattered, naturally written artifacts.
+- Layer boundary: the G-02 EvidenceRecord contract remains unchanged. Semantic resolution must be implemented as a layer above G-02.
+- Model responsibility: the model interprets artifact content and cross-document relations.
+- Backend responsibility: the backend owns and restricts candidate project IDs and target IDs, and validates returned IDs, candidate membership, statuses, and deterministic supporting span IDs.
+- Trust boundary: the model may identify naturally written references that are not pre-registered aliases, but it must resolve them only to backend-provided candidate project and target IDs and support the resolution with valid deterministic spans. It must not invent canonical projects, products, target IDs, evidence IDs, spans, or evidence metadata.
+- Ambiguity handling: ambiguity must not become automatic source assignment; ambiguous product-family language must not automatically become global scope or “both”; and unrelated or unresolved sources must not be silently included.
+- Human confirmation: confirmation is required only when semantic analysis still leaves multiple reasonable interpretations. A resolution confirmation maps meaning or scope; it does not automatically become evidence that the underlying decision is true.
+- Live-evaluation boundary: the final live OpenAI evaluation must perform semantic resolution before continuity analysis. No claim may be made that GPT-5.6 currently resolves project aliases or decision scope.
+- Gate status: Gate G-03 remains not passed. PR #9 remains not merge-ready.
+- Strict competition implementation boundary:
+  - one candidate workspace;
+  - one canonical Project Aurora;
+  - naturally varied references to Aurora;
+  - one minimal decoy, unrelated, or ambiguous source;
+  - deterministic supporting span IDs;
+  - backend validation;
+  - no automatic source assignment while ambiguity remains;
+  - one controlled live GPT-5.6 semantic-resolution run followed by continuity analysis;
+  - LynxMask Mobile and Desktop only as a small fixture or contract test for Decision Scope Resolution;
+  - no LynxMask UI integration or production workflow in this package.
+- This annex does not authorize building now:
+  - a universal knowledge graph;
+  - automatic project discovery across the user’s computer;
+  - persistent alias-learning infrastructure;
+  - an arbitrary number of projects;
+  - full persistence of resolution records;
+  - a complete entity-management interface;
+  - a finished production-grade universal resolver.
+- Intended sequence:
+  1. complete this documentation checkpoint;
+  2. create a separate docs-only semantic-resolution contract;
+  3. falsify that contract;
+  4. implement one bounded thin implementation package;
+  5. run one controlled live resolution plus continuity-analysis test;
+  6. wire or capture UI and film only after the backend result is real.
