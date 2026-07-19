@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, cast
 
+from continuity_ai.domain import EvidenceSpan, ReasoningEvidence
 from continuity_ai.errors import ProviderError
 from continuity_ai.prompts import (
     PROMPTS,
@@ -12,12 +13,17 @@ from continuity_ai.prompts import (
     REASONING_RESPONSE_SCHEMA_NAME,
     reasoning_response_schema,
 )
+from continuity_ai.reasoning_contract import AnalysisCandidate
 
 MODEL_ENVIRONMENT_VARIABLE = 'CONTINUITY_OPENAI_MODEL'
 REQUEST_SCHEMA_VERSION = '1.0'
 
 
-def build_request_document(evidence: Any, spans: Any, question: str) -> dict[str, Any]:
+def build_request_document(
+    evidence: tuple[ReasoningEvidence, ...],
+    spans: tuple[EvidenceSpan, ...],
+    question: str,
+) -> dict[str, Any]:
     '''Build the provider-neutral, closed-world request document.'''
     return {
         'request_schema_version': REQUEST_SCHEMA_VERSION,
@@ -45,7 +51,11 @@ def build_request_document(evidence: Any, spans: Any, question: str) -> dict[str
     }
 
 
-def serialize_request_document(evidence: Any, spans: Any, question: str) -> str:
+def serialize_request_document(
+    evidence: tuple[ReasoningEvidence, ...],
+    spans: tuple[EvidenceSpan, ...],
+    question: str,
+) -> str:
     '''Serialize the request deterministically while preserving Unicode.'''
     return json.dumps(
         build_request_document(evidence, spans, question),
@@ -87,7 +97,12 @@ class OpenAIReasoningProvider:
                 raise ProviderError() from None
         self.client = client
 
-    def analyze(self, evidence: Any, spans: Any, question: str) -> dict[str, Any]:
+    def analyze(
+        self,
+        evidence: tuple[ReasoningEvidence, ...],
+        spans: tuple[EvidenceSpan, ...],
+        question: str,
+    ) -> AnalysisCandidate:
         request_input = serialize_request_document(evidence, spans, question)
         try:
             response = self.client.responses.create(
@@ -119,7 +134,7 @@ class OpenAIReasoningProvider:
             parsed = json.loads(output_text)
             if not isinstance(parsed, dict):
                 raise ProviderError()
-            return parsed
+            return cast(AnalysisCandidate, parsed)
         except ProviderError:
             raise
         except Exception:

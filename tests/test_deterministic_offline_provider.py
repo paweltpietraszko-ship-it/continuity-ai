@@ -8,12 +8,15 @@ from pathlib import Path
 import pytest
 
 from continuity_ai.bridge import Bridge
-from continuity_ai.domain import EvidenceSpan, ReasoningEvidence
-from continuity_ai.errors import ProviderError
-from continuity_ai.evidence import build_spans
-from continuity_ai.reasoning_pipeline import (
+from continuity_ai.deterministic_offline_provider import (
     DeterministicOfflineReasoningProvider,
-    validate_analysis,
+)
+from continuity_ai.domain import EvidenceSpan, ReasoningEvidence
+from continuity_ai.errors import ProviderError, ValidationError
+from continuity_ai.evidence import build_spans
+from continuity_ai.reasoning_pipeline import validate_analysis
+from continuity_ai.reasoning_pipeline import (
+    DeterministicOfflineReasoningProvider as PipelineOfflineProvider,
 )
 
 
@@ -122,6 +125,10 @@ def test_reordering_records_and_spans_does_not_change_output_or_roles() -> None:
     validate_analysis(reordered, reordered_records, reordered_spans)
 
 
+def test_public_pipeline_surface_reexports_the_canonical_provider() -> None:
+    assert PipelineOfflineProvider is DeterministicOfflineReasoningProvider
+
+
 def test_output_is_schema_valid_and_explicitly_reports_evidence_gaps() -> None:
     records = (_record("unfamiliar-ID-77", "Unclassified note", "Only one fact."),)
     spans = build_spans(records)
@@ -168,6 +175,30 @@ def test_unsupported_or_insufficient_input_fails_closed(
 ) -> None:
     with pytest.raises(ProviderError):
         DeterministicOfflineReasoningProvider().analyze(records, spans, question)
+
+
+def test_provider_and_validator_share_the_grounding_identity_contract() -> None:
+    records = (
+        _record("shared-alpha", "First note", "First content"),
+        _record("shared-beta", "Second note", "Second content"),
+    )
+    spans = build_spans(records)
+    provider = DeterministicOfflineReasoningProvider()
+    candidate = provider.analyze(records, spans, "Assess safely")
+    ambiguous_records = (records[0], records[0])
+    foreign_spans = (
+        spans[0],
+        EvidenceSpan("foreign:L001", "foreign", "Foreign content", 1),
+    )
+
+    with pytest.raises(ProviderError):
+        provider.analyze(ambiguous_records, spans, "Assess safely")
+    with pytest.raises(ValidationError):
+        validate_analysis(candidate, ambiguous_records, spans)
+    with pytest.raises(ProviderError):
+        provider.analyze(records, foreign_spans, "Assess safely")
+    with pytest.raises(ValidationError):
+        validate_analysis(candidate, records, foreign_spans)
 
 
 def test_fixture_project_literals_are_absent_from_production_python() -> None:

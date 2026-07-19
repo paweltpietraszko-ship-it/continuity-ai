@@ -4,8 +4,10 @@ from __future__ import annotations
 import os
 
 from continuity_ai.errors import ProviderError
+from continuity_ai.deterministic_offline_provider import (
+    DeterministicOfflineReasoningProvider,
+)
 from continuity_ai.openai_provider import OpenAIReasoningProvider
-from continuity_ai.reasoning_pipeline import DeterministicOfflineReasoningProvider
 
 
 CONTINUITY_REASONING_PROVIDER = "CONTINUITY_REASONING_PROVIDER"

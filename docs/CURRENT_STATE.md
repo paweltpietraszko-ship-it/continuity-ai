@@ -118,6 +118,11 @@
 - This provider exists only for tests and offline integration fallback. Its
   schema-valid output does not demonstrate real-model generalization or establish
   that no real continuity break exists.
+- Architectural boundary: typed candidate and grounding contracts live in
+  `reasoning_contract.py`; deterministic candidate generation lives in
+  `deterministic_offline_provider.py`; all semantic/schema validation lives in
+  `analysis_validation.py`; and `reasoning_pipeline.py` is a thin stable
+  orchestration facade.
 
 ## 2026-07-18 Read-Only Cursor Audit
 

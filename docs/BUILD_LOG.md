@@ -228,6 +228,12 @@
 - Full backend suite: 247 passed.
 - Protected-path audit: source scoping, bridge, vault, desktop, and fixture
   generator code were not modified.
+- Competition-grade architecture follow-up: separated the typed reasoning
+  contract, deterministic provider, canonical validator, and orchestration facade.
+  Evidence/span identity and canonical evidence-gap text each have one shared
+  implementation used by both generation and validation boundaries.
+- Architecture-focused provider/validator/persistence/report suite: 161 passed.
+- Full backend suite after the architecture follow-up: 249 passed.
 
 ## 2026-07-18 Semantic Project and Decision-Scope Resolution Blocker
 

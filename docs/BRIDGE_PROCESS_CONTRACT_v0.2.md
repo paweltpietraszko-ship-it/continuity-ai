@@ -58,6 +58,12 @@ Rules:
 - Empty evidence, duplicate evidence identities, missing owned spans, duplicate
   span identities, foreign spans, or an invalid question fail closed with a
   controlled provider error.
+- Module boundaries are explicit: `reasoning_contract.py` owns typed provider
+  payloads, canonical evidence-gap construction, and the shared identity-only
+  grounding index; `deterministic_offline_provider.py` owns only offline
+  candidate generation; `analysis_validation.py` owns the single canonical
+  validator; and `reasoning_pipeline.py` remains the stable orchestration and
+  import facade.
 - The parent process is responsible for setting `OPENAI_API_KEY` and `CONTINUITY_OPENAI_MODEL` when selecting `openai`; the Bridge process performs no other provider configuration.
 
 ## 2. Transport
