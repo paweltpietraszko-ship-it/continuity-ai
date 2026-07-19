@@ -1719,10 +1719,27 @@ def _validate_operation_request(request: CodexOperationRequest) -> None:
 def _validate_schema_contract(schema: Mapping[str, object]) -> None:
     allowed = {
         "type", "properties", "required", "additionalProperties", "items",
-        "enum", "const", "minLength", "minItems", "maxItems",
+        "enum", "const", "minLength", "minItems", "maxItems", "anyOf",
     }
     if not set(schema).issubset(allowed):
         raise InvalidSessionState("Codex output schema uses unsupported validation keywords.")
+    if "anyOf" in schema:
+        if set(schema) != {"anyOf"}:
+            raise InvalidSessionState(
+                "Codex output schema anyOf must not be combined with other keywords."
+            )
+        variants = schema["anyOf"]
+        if not isinstance(variants, list) or len(variants) < 2:
+            raise InvalidSessionState(
+                "Codex output schema anyOf must list at least two variants."
+            )
+        for variant in variants:
+            if not isinstance(variant, Mapping):
+                raise InvalidSessionState(
+                    "Codex output schema anyOf entries must be objects."
+                )
+            _validate_schema_contract(variant)
+        return
     schema_type = schema.get("type")
     if schema_type not in {"object", "array", "string", "integer", "number", "boolean", "null"}:
         raise InvalidSessionState("Codex output schema has an unsupported type.")
@@ -1768,6 +1785,14 @@ def _validated_output(final_response: str, schema: Mapping[str, object]) -> obje
 
 
 def _validate_value(value: object, schema: Mapping[str, object], path: str) -> None:
+    if "anyOf" in schema:
+        for variant in schema["anyOf"]:
+            try:
+                _validate_value(value, variant, path)
+                return
+            except ValueError:
+                continue
+        raise ValueError(path)
     expected = schema["type"]
     matches = {
         "object": isinstance(value, dict),

@@ -514,6 +514,98 @@ def test_reporting_requires_approved_phase(tmp_path: Path) -> None:
     assert len(runner.calls) == calls_before
 
 
+def test_any_of_schema_accepts_either_variant(tmp_path: Path) -> None:
+    """`anyOf` is the only schema-contract addition needed to express the
+    existing canonical Project Report schema's nullable fields
+    (`reasoning_response_schema()`), without adding `type: [...]` unions to
+    the controller boundary itself."""
+    runner = FakeRunner(response=json.dumps({"kind": None}), thread_id=THREAD_ID)
+    controller, _, _ = _controller(tmp_path, runner)
+    root = _workspace(tmp_path)
+    created = controller.create_session(root)
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["kind"],
+        "properties": {
+            "kind": {
+                "anyOf": [
+                    {"type": "string", "enum": ["a", "b"]},
+                    {"type": "null"},
+                ]
+            }
+        },
+    }
+
+    result = controller.start_investigation(
+        created.controller_session_id,
+        root,
+        CodexOperationRequest("q", schema, 5),
+    )
+
+    assert result.structured_output == {"kind": None}
+    assert result.receipt.succeeded is True
+
+
+def test_any_of_schema_rejects_value_matching_no_variant(tmp_path: Path) -> None:
+    runner = FakeRunner(response=json.dumps({"kind": "c"}), thread_id=THREAD_ID)
+    controller, store, _ = _controller(tmp_path, runner)
+    root = _workspace(tmp_path)
+    created = controller.create_session(root)
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["kind"],
+        "properties": {
+            "kind": {
+                "anyOf": [
+                    {"type": "string", "enum": ["a", "b"]},
+                    {"type": "null"},
+                ]
+            }
+        },
+    }
+
+    with pytest.raises(InvalidCodexOutput):
+        controller.start_investigation(
+            created.controller_session_id, root, CodexOperationRequest("q", schema, 5)
+        )
+
+    retained = store.load(created.controller_session_id)
+    assert retained.phase is SessionPhase.READY
+
+
+def test_any_of_schema_must_have_at_least_two_variants_and_no_siblings(
+    tmp_path: Path,
+) -> None:
+    controller, _, _ = _controller(tmp_path)
+    root = _workspace(tmp_path)
+    created = controller.create_session(root)
+
+    with pytest.raises(InvalidSessionState):
+        controller.start_investigation(
+            created.controller_session_id,
+            root,
+            CodexOperationRequest(
+                "q",
+                {"type": "object", "additionalProperties": False, "required": [],
+                 "properties": {"kind": {"anyOf": [{"type": "string"}], "type": "string"}}},
+                5,
+            ),
+        )
+    with pytest.raises(InvalidSessionState):
+        controller.start_investigation(
+            created.controller_session_id,
+            root,
+            CodexOperationRequest(
+                "q",
+                {"type": "object", "additionalProperties": False, "required": [],
+                 "properties": {"kind": {"anyOf": [{"type": "string"}]}}},
+                5,
+            ),
+        )
+
+
 def test_controller_session_id_mismatch_is_rejected(tmp_path: Path) -> None:
     controller, _, _ = _controller(tmp_path)
     controller.create_session(_workspace(tmp_path))

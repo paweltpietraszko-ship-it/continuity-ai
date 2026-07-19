@@ -9,6 +9,13 @@ from continuity_ai.domain import AnalysisRevisionProposal, AuthenticatedUserAtte
 from continuity_ai.errors import PublicError, ProjectMismatchError, ValidationError, VaultLockedError
 from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, content_sha256, hydrate_citations, hydrate_snapshot_citations, snapshot_citation_statuses
 from continuity_ai.ingestion import ingest_artifacts, read_project_name
+from continuity_ai.integration.bridge_vertical_flow import (
+    VerticalFlowState,
+    build_source_registry,
+    confirm_and_materialize_approved_workspace,
+    report_on_approved_workspace,
+    start_real_scoping_investigation,
+)
 from continuity_ai.provider_selection import create_reasoning_provider
 from continuity_ai.reasoning_pipeline import run_analysis
 from continuity_ai.retained_analysis import RETAINED_ANALYSIS_NONE, RETAINED_ANALYSIS_VALID, restore_latest
@@ -26,6 +33,7 @@ class Bridge:
     def __init__(self, provider=None, source_scoping_provider=None):
         self.vault = None
         self.project: str | None = None
+        self.artifact_root: Path | None = None
         self.artifact_records: tuple = ()
         self.artifact_evidence_records: tuple = ()
         self.records: tuple = ()
@@ -36,6 +44,8 @@ class Bridge:
         self.retained_analysis_status: str = RETAINED_ANALYSIS_NONE
         self.provider = provider if provider is not None else create_reasoning_provider()
         self.source_scoping = SourceScopingSession(source_scoping_provider)
+        self._source_registry: dict = {}
+        self._vertical = VerticalFlowState()
 
     def handle(self, cmd) -> dict:
         command_name = cmd.get("command") if isinstance(cmd, dict) else None
@@ -73,6 +83,7 @@ class Bridge:
             self.records = candidate_records
             self.spans = candidate_spans
             self.source_scoping.reset()
+            self._vertical.reset()
             self._restore_from_vault(clear_project=True)
             return {"session_id": session.session_id, "owner_display_name": candidate.payload["owner"]["display_name"]}
 
@@ -96,6 +107,7 @@ class Bridge:
             self.records = candidate_records
             self.spans = candidate_spans
             self.source_scoping.reset()
+            self._vertical.reset()
             self._restore_from_vault(clear_project=True)
             return {"session_id": session.session_id, "owner_display_name": candidate.payload["owner"]["display_name"]}
 
@@ -119,8 +131,10 @@ class Bridge:
                 raise ProjectMismatchError()
             new_artifact_records = order_evidence(tuple(artifact_to_reasoning(r) for r in raw_records))
             candidate_records, candidate_spans = _compose_evidence(new_artifact_records, self.vault)
+            self.artifact_root = artifact_root
             self.artifact_records = new_artifact_records
             self.artifact_evidence_records = tuple(sorted(raw_records, key=lambda r: (r.timestamp, r.evidence_id)))
+            self._source_registry = build_source_registry(self.artifact_evidence_records)
             self.records = candidate_records
             self.spans = candidate_spans
             self.project = project_name
@@ -131,6 +145,11 @@ class Bridge:
             # newly loaded evidence the next time cards are hydrated.
             self._restore_from_vault(clear_project=False)
             self.source_scoping.restore(project_name, self.artifact_records, self.vault)
+            # A prior project's live controller session/approved binding must
+            # never be resumed for whatever project was just authoritatively
+            # loaded here (including a same-vault reload of the same project,
+            # which still requires a fresh investigation before any reporting).
+            self._vertical.reset()
             try:
                 _, _, scoped = self._prepare_downstream_project_evidence()
             except ValidationError:
@@ -153,7 +172,19 @@ class Bridge:
             requested_target = cmd.get("target_project", self.project)
             if requested_target != self.project:
                 raise ProjectMismatchError()
-            response = self.source_scoping.classify(self.project, self.artifact_records)
+            if self.source_scoping.provider is None:
+                # Production path: a genuine Codex controller session performs
+                # the investigation. Test callers that inject an explicit
+                # source_scoping_provider (e.g. FakeSourceScopingProvider) keep
+                # the deterministic in-memory path below unchanged.
+                scoping_result = start_real_scoping_investigation(
+                    self._vertical, self.artifact_root, self.project, self.artifact_records
+                )
+                response = self.source_scoping.classify(
+                    self.project, self.artifact_records, precomputed_result=scoping_result
+                )
+            else:
+                response = self.source_scoping.classify(self.project, self.artifact_records)
             self._invalidate_analysis()
             return {"project": self.project, **response}
 
@@ -163,9 +194,24 @@ class Bridge:
             overrides = cmd.get("overrides")
             if not isinstance(overrides, dict):
                 raise ValidationError()
-            response = self.source_scoping.approve(
-                self.artifact_records, overrides, vault=self.vault
-            )
+            if self._vertical.controller is not None:
+                approved_scope = confirm_and_materialize_approved_workspace(
+                    self._vertical,
+                    self.artifact_root,
+                    self.artifact_records,
+                    overrides,
+                    self._source_registry,
+                )
+                response = self.source_scoping.approve(
+                    self.artifact_records,
+                    overrides,
+                    vault=self.vault,
+                    precomputed_scope=approved_scope,
+                )
+            else:
+                response = self.source_scoping.approve(
+                    self.artifact_records, overrides, vault=self.vault
+                )
             self._invalidate_analysis()
             self._prepare_downstream_project_evidence()
             return {
@@ -181,7 +227,18 @@ class Bridge:
             question = cmd.get("question", "")
             if not isinstance(question, str) or not question.strip():
                 raise ValidationError()
-            result, spans, snapshot = run_analysis(records, question, self.provider)
+            if (
+                self._vertical.controller is not None
+                and self._vertical.approved_workspace_root is not None
+            ):
+                # The same retained Codex session is resumed on the approved-
+                # only workspace; no local provider, OpenAI, or fake fallback
+                # is ever consulted for this report.
+                result, spans, snapshot = report_on_approved_workspace(
+                    self._vertical, records, question
+                )
+            else:
+                result, spans, snapshot = run_analysis(records, question, self.provider)
             saved = SavedAnalysis(snapshot.analysis_id, snapshot.created_at, result, snapshot, question, self.project)
             persisted = False
             if self.vault is not None:

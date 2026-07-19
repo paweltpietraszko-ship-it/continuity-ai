@@ -38,15 +38,22 @@ class SourceScopingSession:
         self.persisted = False
 
     def classify(
-        self, target_project: str, evidence: tuple[Any, ...]
+        self,
+        target_project: str,
+        evidence: tuple[Any, ...],
+        *,
+        precomputed_result: Any | None = None,
     ) -> dict[str, Any]:
-        provider = (
-            self.provider
-            if self.provider is not None
-            else create_source_scoping_provider()
-        )
         spans = build_spans(evidence)
-        candidate = run_source_scoping(target_project, evidence, spans, provider)
+        if precomputed_result is not None:
+            candidate = precomputed_result
+        else:
+            provider = (
+                self.provider
+                if self.provider is not None
+                else create_source_scoping_provider()
+            )
+            candidate = run_source_scoping(target_project, evidence, spans, provider)
         self.result = candidate
         self.approved_scope = None
         self.status = STATUS_PENDING_REVIEW
@@ -63,10 +70,16 @@ class SourceScopingSession:
         evidence: tuple[Any, ...],
         overrides: Mapping[str, str],
         vault=None,
+        *,
+        precomputed_scope: Any | None = None,
     ) -> dict[str, Any]:
         if self.result is None or self.status != STATUS_PENDING_REVIEW:
             raise ValidationError()
-        scope = approve_source_scope(self.result, evidence, overrides)
+        scope = (
+            precomputed_scope
+            if precomputed_scope is not None
+            else approve_source_scope(self.result, evidence, overrides)
+        )
         persisted = False
         if vault is not None:
             try:
