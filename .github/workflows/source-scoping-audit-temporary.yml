@@ -6,6 +6,10 @@ on:
       - feature/project-source-scoping-v0.1
   workflow_dispatch:
 
+permissions:
+  contents: write
+  statuses: write
+
 jobs:
   backend-audit:
     runs-on: ubuntu-latest
@@ -25,22 +29,118 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e . pytest pytest-socket
 
-      - name: Confirm exact checkout
+      - name: Preflight full backend and diff
         run: |
+          python -m pytest -q
+          git diff --check b42a0787d7cc6820412369e29efe5cad3ad62e0f...HEAD
+
+      - name: Create final commit without temporary workflow
+        run: |
+          git config user.name "continuity-source-scoping-audit"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/source-scoping-audit-temporary.yml
+          git commit -m "Remove temporary source scoping audit workflow"
+          git push origin HEAD:feature/project-source-scoping-v0.1
+
+      - name: Confirm exact final checkout
+        run: |
+          git fetch origin feature/project-source-scoping-v0.1
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/feature/project-source-scoping-v0.1)"
           git branch --show-current
           git rev-parse HEAD
           git status --short
 
-      - name: Source Scoping tests
-        run: python -m pytest tests/source_scoping -q
-
-      - name: Four Codex audit reproductions
-        run: python -m pytest tests/source_scoping/test_codex_audit_regressions.py -q
-
-      - name: Full backend pytest
-        run: python -m pytest -q
-
-      - name: Repository checks
+      - name: Run exact final checks and publish commit statuses
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          git diff --check b42a0787d7cc6820412369e29efe5cad3ad62e0f...HEAD
-          git status --short
+          set -uo pipefail
+          FINAL_SHA="$(git rev-parse HEAD)"
+          API="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${FINAL_SHA}"
+
+          post_status() {
+            local context="$1"
+            local state="$2"
+            local description="$3"
+            python - "$context" "$state" "$description" > /tmp/status.json <<'PY'
+          import json
+          import sys
+          print(json.dumps({
+              "state": sys.argv[2],
+              "context": sys.argv[1],
+              "description": sys.argv[3][:140],
+          }))
+          PY
+            curl --fail --silent --show-error \
+              --request POST \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header "Accept: application/vnd.github+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "${API}" \
+              --data-binary @/tmp/status.json >/dev/null
+          }
+
+          run_pytest() {
+            local context="$1"
+            shift
+            local safe_name="${context//\//-}"
+            local xml="/tmp/${safe_name}.xml"
+            local log="/tmp/${safe_name}.log"
+            set +e
+            python -m pytest "$@" -q --junitxml="${xml}" 2>&1 | tee "${log}"
+            local code=${PIPESTATUS[0]}
+            set -e
+            local description
+            description="$(python - "${xml}" "${log}" "${code}" <<'PY'
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+
+          xml_path, log_path, code = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          try:
+              root = ET.parse(xml_path).getroot()
+              suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+              tests = sum(int(item.attrib.get("tests", 0)) for item in suites)
+              failures = sum(int(item.attrib.get("failures", 0)) for item in suites)
+              errors = sum(int(item.attrib.get("errors", 0)) for item in suites)
+              skipped = sum(int(item.attrib.get("skipped", 0)) for item in suites)
+          except Exception:
+              tests = failures = errors = skipped = 0
+          if code == 0:
+              print(f"{tests} passed; {skipped} skipped")
+          else:
+              failed = []
+              for line in pathlib.Path(log_path).read_text("utf-8", errors="replace").splitlines():
+                  if line.startswith("FAILED "):
+                      failed.append(line.removeprefix("FAILED ").split(" - ", 1)[0])
+              names = ", ".join(failed[:2]) or "see run logs"
+              print(f"{failures + errors} failed of {tests}: {names}")
+          PY
+          )"
+            if [ "${code}" -eq 0 ]; then
+              post_status "${context}" success "${description}"
+            else
+              post_status "${context}" failure "${description}"
+              exit "${code}"
+            fi
+          }
+
+          run_pytest source-scoping/tests tests/source_scoping
+          run_pytest source-scoping/codex-audit tests/source_scoping/test_codex_audit_regressions.py
+          run_pytest backend/pytest
+
+          if git diff --check b42a0787d7cc6820412369e29efe5cad3ad62e0f...HEAD; then
+            post_status repository/diff-check success "git diff --check passed"
+          else
+            post_status repository/diff-check failure "git diff --check failed"
+            exit 1
+          fi
+
+          if [ -z "$(git status --short)" ] && \
+             [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/feature/project-source-scoping-v0.1)" ]; then
+            post_status repository/head success "clean; local HEAD equals upstream"
+          else
+            post_status repository/head failure "dirty or local HEAD differs from upstream"
+            exit 1
+          fi
