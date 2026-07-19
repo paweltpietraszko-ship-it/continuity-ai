@@ -1,5 +1,10 @@
 """Neutral unseen-workspace generation, ingestion, and evaluation contracts."""
 
+from continuity_ai.unseen_workspace.codex_workspace_spike import (
+    CodexWorkspaceSpikeArtifacts,
+    CodexWorkspaceSpikeError,
+    classify_workspace_with_codex,
+)
 from continuity_ai.unseen_workspace.evaluator import (
     ScopeEvaluationError,
     evaluate_generated_run,
@@ -39,6 +44,8 @@ from continuity_ai.unseen_workspace.reporting import (
 __all__ = [
     "ClassificationDecision",
     "ClassificationResult",
+    "CodexWorkspaceSpikeArtifacts",
+    "CodexWorkspaceSpikeError",
     "EvaluationReport",
     "EvaluationReportArtifacts",
     "EvaluationReportWriteError",
@@ -54,6 +61,7 @@ __all__ = [
     "ScopeStatus",
     "UnseenWorkspaceGenerationError",
     "WorkspaceInput",
+    "classify_workspace_with_codex",
     "evaluate_generated_run",
     "evaluate_scope",
     "generate_unseen_workspace",

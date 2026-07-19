@@ -8,6 +8,7 @@ from pathlib import Path
 
 from continuity_ai.aurora_fixture import generate_project_aurora_fixture, manifest
 from continuity_ai.unseen_workspace import (
+    classify_workspace_with_codex,
     evaluate_generated_run,
     generate_unseen_workspace,
     load_classification_result,
@@ -30,6 +31,13 @@ def main() -> None:
     evaluate_unseen.add_argument("--run-root", required=True, type=Path)
     evaluate_unseen.add_argument("--classification-result", required=True, type=Path)
     evaluate_unseen.add_argument("--output-root", required=True, type=Path)
+    classify_with_codex = subparsers.add_parser(
+        "classify-unseen-workspace-with-codex"
+    )
+    classify_with_codex.add_argument("--input-root", required=True, type=Path)
+    classify_with_codex.add_argument(
+        "--classification-result", required=True, type=Path
+    )
     args = parser.parse_args()
 
     if args.command == "generate-aurora-fixture":
@@ -45,3 +53,20 @@ def main() -> None:
         print(render_evaluation_markdown(report), end="")
         print(f"JSON report: {artifacts.json_path}")
         print(f"Markdown report: {artifacts.markdown_path}")
+    elif args.command == "classify-unseen-workspace-with-codex":
+        artifacts = classify_workspace_with_codex(
+            args.input_root,
+            args.classification_result,
+        )
+        print(
+            json.dumps(
+                {
+                    "classification_result": str(artifacts.classification_path),
+                    "invocation_log": str(artifacts.invocation_log_path),
+                    "provider_identity": artifacts.classification_result.provider_identity,
+                    "classified_records": len(artifacts.classification_result.decisions),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )

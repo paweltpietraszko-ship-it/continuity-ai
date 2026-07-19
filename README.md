@@ -35,6 +35,20 @@ The evaluator emits `evaluation-proof/report.json` and `evaluation-proof/report.
 
 See [Unseen Workspace Generator and Machine-Evaluable Proof v0.1](docs/UNSEEN_WORKSPACE_GENERATOR_v0.1.md) for contracts, exact claim meanings, architecture, and the proof matrix.
 
+### Isolated Codex-native classification spike
+
+Run a local Codex CLI agent with the validated engine input as its read-only working directory:
+
+```bash
+uv run continuity-ai classify-unseen-workspace-with-codex \
+  --input-root generated-run/input \
+  --classification-result classification-result.json
+```
+
+The controller passes no generated-run oracle path or data to Codex. It validates exact evidence-ID coverage, rejects malformed output, verifies the input tree remained unchanged, and atomically publishes the canonical classification. The adjacent `classification-result.codex-invocation.json` retains the command, working directory, prompt, schema, environment-key allowlist, stdout, stderr, and final response. This spike does not generate a Project Report.
+
+See [Codex-native Workspace Classification Spike](docs/CODEX_NATIVE_WORKSPACE_SPIKE.md) for the exact invocation and security boundary.
+
 ## License
 
 Apache License 2.0. See `LICENSE`.
