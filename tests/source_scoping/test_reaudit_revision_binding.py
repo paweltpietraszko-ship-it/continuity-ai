@@ -13,6 +13,7 @@ from continuity_ai.conversation import (
     confirm_analysis_revision,
     send_message,
 )
+from continuity_ai.domain import AnalysisRevisionContextBinding
 from continuity_ai.evidence import (
     attestation_to_reasoning,
     build_spans,
@@ -36,6 +37,21 @@ PASSWORD = 'correct horse battery staple'
 
 class ForgedEqualBinding:
     def __eq__(self, other):
+        return True
+
+
+class MatchingFieldProxy:
+    def __init__(self, binding):
+        self.schema_version = binding.schema_version
+        self.sha256 = binding.sha256
+
+
+class RecordingEqualityBinding:
+    def __init__(self):
+        self.called = False
+
+    def __eq__(self, other):
+        self.called = True
         return True
 
 
@@ -104,6 +120,22 @@ def _assert_rejection_is_atomic(
     assert vault.path.read_bytes() == encrypted_before
 
 
+def _assert_invocation_rejected_is_atomic(
+    vault,
+    proposal,
+    invocation,
+    *,
+    exception_types=(ValidationError,),
+):
+    payload_before = copy.deepcopy(vault.payload)
+    encrypted_before = vault.path.read_bytes()
+    with pytest.raises(exception_types):
+        invocation()
+    assert vault.pending_revisions[proposal.proposal_id] is proposal
+    assert vault.payload == payload_before
+    assert vault.path.read_bytes() == encrypted_before
+
+
 def test_omitted_current_binding_is_rejected_fail_closed(
     tmp_path,
     workspace,
@@ -160,6 +192,172 @@ def test_malformed_equal_binding_cannot_bypass_validation(
         vault.path.read_bytes() == encrypted_before,
     )
     assert actual == (True, True, True, True)
+
+
+@pytest.mark.parametrize('binding_count', [2, 3])
+def test_multiple_binding_arguments_are_rejected_before_mutation(
+    tmp_path,
+    workspace,
+    binding_count,
+):
+    target, records, _ = workspace
+    vault = Vault(tmp_path / f'{binding_count}-bindings.vault')
+    vault.initialize('Owner', PASSWORD)
+    proposal = _propose(vault, target, records)
+    bindings = (proposal.context_binding,) * binding_count
+    _assert_invocation_rejected_is_atomic(
+        vault,
+        proposal,
+        lambda: confirm_analysis_revision(
+            vault,
+            proposal.proposal_id,
+            *bindings,
+        ),
+    )
+
+
+def test_matching_binding_via_single_item_args_confirms(
+    tmp_path,
+    workspace,
+):
+    target, records, _ = workspace
+    vault = Vault(tmp_path / 'single-args.vault')
+    vault.initialize('Owner', PASSWORD)
+    proposal = _propose(vault, target, records)
+    args = (proposal.context_binding,)
+    confirmed = confirm_analysis_revision(
+        vault,
+        proposal.proposal_id,
+        *args,
+    )
+    assert confirmed is proposal.candidate
+    assert proposal.proposal_id not in vault.pending_revisions
+
+
+def test_binding_keyword_is_not_a_compatibility_bypass(
+    tmp_path,
+    workspace,
+):
+    target, records, _ = workspace
+    vault = Vault(tmp_path / 'keyword-binding.vault')
+    vault.initialize('Owner', PASSWORD)
+    proposal = _propose(vault, target, records)
+    _assert_invocation_rejected_is_atomic(
+        vault,
+        proposal,
+        lambda: confirm_analysis_revision(
+            vault=vault,
+            proposal_id=proposal.proposal_id,
+            current_context_binding_values=proposal.context_binding,
+        ),
+        exception_types=(TypeError,),
+    )
+
+
+def test_matching_field_proxy_and_untrusted_equality_are_rejected(
+    tmp_path,
+    workspace,
+):
+    target, records, _ = workspace
+    vault = Vault(tmp_path / 'proxy-binding.vault')
+    vault.initialize('Owner', PASSWORD)
+    proposal = _propose(vault, target, records)
+    equality_probe = RecordingEqualityBinding()
+    invalid_values = (
+        MatchingFieldProxy(proposal.context_binding),
+        equality_probe,
+    )
+    for invalid_value in invalid_values:
+        _assert_invocation_rejected_is_atomic(
+            vault,
+            proposal,
+            lambda invalid_value=invalid_value: confirm_analysis_revision(
+                vault,
+                proposal.proposal_id,
+                invalid_value,
+            ),
+        )
+    assert equality_probe.called is False
+
+
+def test_complete_malformed_supplied_binding_matrix_rejects(
+    tmp_path,
+    workspace,
+):
+    target, records, _ = workspace
+    vault = Vault(tmp_path / 'malformed-supplied.vault')
+    vault.initialize('Owner', PASSWORD)
+    proposal = _propose(vault, target, records)
+    valid = proposal.context_binding
+    invalid_bindings = (
+        AnalysisRevisionContextBinding(1, valid.sha256),
+        AnalysisRevisionContextBinding(valid.schema_version, b'0' * 64),
+        AnalysisRevisionContextBinding(
+            valid.schema_version,
+            valid.sha256.upper(),
+        ),
+        AnalysisRevisionContextBinding(
+            valid.schema_version,
+            valid.sha256[:-1],
+        ),
+        AnalysisRevisionContextBinding(
+            valid.schema_version,
+            'g' * 64,
+        ),
+    )
+    for invalid_binding in invalid_bindings:
+        _assert_invocation_rejected_is_atomic(
+            vault,
+            proposal,
+            lambda invalid_binding=invalid_binding: confirm_analysis_revision(
+                vault,
+                proposal.proposal_id,
+                invalid_binding,
+            ),
+        )
+
+
+def test_complete_malformed_stored_binding_matrix_rejects(
+    tmp_path,
+    workspace,
+):
+    target, records, _ = workspace
+    vault = Vault(tmp_path / 'malformed-stored.vault')
+    vault.initialize('Owner', PASSWORD)
+    proposal = _propose(vault, target, records)
+    valid = proposal.context_binding
+    invalid_bindings = (
+        MatchingFieldProxy(valid),
+        AnalysisRevisionContextBinding(1, valid.sha256),
+        AnalysisRevisionContextBinding(valid.schema_version, b'0' * 64),
+        AnalysisRevisionContextBinding(
+            valid.schema_version,
+            valid.sha256.upper(),
+        ),
+        AnalysisRevisionContextBinding(
+            valid.schema_version,
+            valid.sha256[:-1],
+        ),
+        AnalysisRevisionContextBinding(
+            valid.schema_version,
+            'g' * 64,
+        ),
+    )
+    for invalid_binding in invalid_bindings:
+        malformed = replace(
+            proposal,
+            context_binding=invalid_binding,
+        )
+        vault.pending_revisions[proposal.proposal_id] = malformed
+        _assert_invocation_rejected_is_atomic(
+            vault,
+            malformed,
+            lambda: confirm_analysis_revision(
+                vault,
+                proposal.proposal_id,
+                valid,
+            ),
+        )
 
 
 def test_binding_from_another_context_is_rejected(
