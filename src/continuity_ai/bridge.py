@@ -204,7 +204,9 @@ class Bridge:
                 raise ValidationError()
             proposal_id = cmd["proposal_id"]
             attestation = self.vault.confirm_attestation(proposal_id)
-            records, _, _ = self._prepare_downstream_project_evidence()
+            records, _, _ = self._prepare_downstream_project_evidence(
+                refresh_unscoped_projection=True,
+            )
             result, spans, snapshot = run_analysis(records, self.last_question, self.provider)
             self.analysis = result
             self.spans = spans
@@ -268,11 +270,12 @@ class Bridge:
         self,
         *,
         after_vault_lock: bool = False,
+        refresh_unscoped_projection: bool = False,
     ) -> tuple[tuple, tuple, bool]:
         """Apply the one authoritative Source Scoping boundary for project consumers."""
         status = self.source_scoping.status
         if status == STATUS_NONE:
-            if after_vault_lock:
+            if after_vault_lock or refresh_unscoped_projection:
                 self.records, self.spans = _compose_evidence(
                     self.artifact_records,
                     self.vault,
