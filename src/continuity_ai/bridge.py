@@ -302,6 +302,10 @@ class Bridge:
         )
         return self.records, self.spans, True
 
+    def _prepare_analysis_evidence(self) -> None:
+        """Preserve the existing analysis seam while delegating to the canonical boundary."""
+        self._prepare_downstream_project_evidence()
+
     def _analysis_matches_live_evidence(self) -> bool:
         if self.snapshot is None:
             return True
