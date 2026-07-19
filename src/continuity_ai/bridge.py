@@ -153,7 +153,7 @@ class Bridge:
             }
 
         if name == "analyze_project":
-            self._refresh_evidence()
+            self._prepare_analysis_evidence()
             if not self.records or self.project is None:
                 raise ValidationError()
             question = cmd.get("question", "")
@@ -257,6 +257,10 @@ class Bridge:
 
     def _refresh_evidence(self) -> None:
         self.records, self.spans = _compose_evidence(self._active_artifact_records(), self.vault)
+
+    def _prepare_analysis_evidence(self) -> None:
+        if self.source_scoping.status != STATUS_NONE:
+            self._refresh_evidence()
 
     def _analysis_matches_live_evidence(self) -> bool:
         if self.snapshot is None:
