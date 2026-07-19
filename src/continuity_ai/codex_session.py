@@ -352,10 +352,13 @@ class JsonSessionStore:
             return {"schema_version": SESSION_SCHEMA_VERSION, "sessions": {}}
         if self.path.is_symlink() or not self.path.is_file():
             raise CorruptSessionState("Session store path is not a regular file.")
+        document_corrupt = False
         try:
             decoded = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise CorruptSessionState("Session state is corrupt.") from exc
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            document_corrupt = True
+        if document_corrupt:
+            raise CorruptSessionState("Session state is corrupt.")
         if not isinstance(decoded, dict) or set(decoded) != {"schema_version", "sessions"}:
             raise CorruptSessionState("Session state has an invalid shape.")
         if decoded["schema_version"] != SESSION_SCHEMA_VERSION:
@@ -366,13 +369,17 @@ class JsonSessionStore:
         return decoded
 
     def _write_document(self, document: Mapping[str, object]) -> None:
+        parent_unavailable = False
         try:
             parent = self.path.parent.resolve(strict=True)
         except OSError:
-            raise SessionPersistenceError("Session store parent is unavailable.") from None
+            parent_unavailable = True
+        if parent_unavailable:
+            raise SessionPersistenceError("Session store parent is unavailable.")
         if not parent.is_dir() or self.path.parent.is_symlink():
             raise SessionPersistenceError("Session store parent is unavailable.")
         temporary = parent / f".{self.path.name}.tmp-{uuid.uuid4().hex}"
+        persistence_failed = False
         try:
             temporary.write_text(
                 json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
@@ -385,9 +392,11 @@ class JsonSessionStore:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+            persistence_failed = True
+        if persistence_failed:
             raise SessionPersistenceError(
                 "Session state could not be persisted atomically."
-            ) from None
+            )
 
 
 @contextmanager
@@ -396,6 +405,7 @@ def _session_store_lock(store_path: Path) -> Iterator[None]:
     if lock_path.exists() and (lock_path.is_symlink() or not lock_path.is_file()):
         raise SessionPersistenceError("Session store lock is unavailable.")
     lock_file = None
+    lock_failed = False
     try:
         lock_file = lock_path.open("a+b")
         if lock_file.seek(0, 2) == 0:
@@ -423,10 +433,15 @@ def _session_store_lock(store_path: Path) -> Iterator[None]:
 
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
     except OSError:
-        raise SessionPersistenceError("Session store lock is unavailable.") from None
+        lock_failed = True
     finally:
         if lock_file is not None:
-            lock_file.close()
+            try:
+                lock_file.close()
+            except OSError:
+                lock_failed = True
+    if lock_failed:
+        raise SessionPersistenceError("Session store lock is unavailable.")
 
 
 def _iso(value: datetime) -> str:
@@ -888,12 +903,15 @@ class CodexSessionController:
         id_factory: Callable[[], uuid.UUID] | None = None,
         liveness_verifier: ProcessLivenessVerifier | None = None,
     ) -> "CodexSessionController":
+        unavailable: CodexSessionError | None = None
         try:
             adapter = CodexCliProcessAdapter.discover(executable)
-        except FileNotFoundError as exc:
-            raise CodexNotInstalled("Codex executable is not installed.") from exc
-        except CodexProcessBoundaryError as exc:
-            raise CodexUnavailable("Codex capability discovery failed.") from exc
+        except FileNotFoundError:
+            unavailable = CodexNotInstalled("Codex executable is not installed.")
+        except CodexProcessBoundaryError:
+            unavailable = CodexUnavailable("Codex capability discovery failed.")
+        if unavailable is not None:
+            raise unavailable
         return cls(
             store,
             adapter,
@@ -1587,12 +1605,15 @@ class CodexSessionController:
 
 def _resolved_workspace(value: Path) -> Path:
     unresolved = Path(value)
+    resolution_failed = False
     try:
         if unresolved.is_symlink():
             raise WorkspaceMismatch("Workspace root cannot be a symbolic link.")
         resolved = unresolved.resolve(strict=True)
-    except OSError as exc:
-        raise WorkspaceMismatch("Workspace root could not be resolved.") from exc
+    except OSError:
+        resolution_failed = True
+    if resolution_failed:
+        raise WorkspaceMismatch("Workspace root could not be resolved.")
     if not resolved.is_dir():
         raise WorkspaceMismatch("Workspace root must be a directory.")
     return resolved

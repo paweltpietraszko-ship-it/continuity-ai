@@ -110,17 +110,21 @@ def capture_workspace(root: Path) -> WorkspaceSnapshot:
     """Hash every path, file byte sequence, and relevant file type in ``root``."""
 
     unresolved = Path(root)
+    resolution_failed = False
     try:
         root_stat = unresolved.lstat()
         if _is_link_or_reparse(root_stat):
             raise CodexProcessBoundaryError("Workspace root cannot be a symbolic link.")
         resolved = unresolved.resolve(strict=True)
-    except OSError as exc:
-        raise CodexProcessBoundaryError("Workspace root could not be resolved.") from exc
+    except OSError:
+        resolution_failed = True
+    if resolution_failed:
+        raise CodexProcessBoundaryError("Workspace root could not be resolved.")
     if not resolved.is_dir():
         raise CodexProcessBoundaryError("Workspace root must be a directory.")
 
     entries: list[WorkspaceEntry] = []
+    snapshot_failed = False
     try:
         for path in sorted(resolved.rglob("*"), key=lambda item: item.relative_to(resolved).as_posix()):
             relative = path.relative_to(resolved).as_posix()
@@ -153,8 +157,10 @@ def capture_workspace(root: Path) -> WorkspaceSnapshot:
                 )
             else:
                 raise CodexProcessBoundaryError("Workspace contains an unsupported file type.")
-    except OSError as exc:
-        raise CodexProcessBoundaryError("Workspace snapshot could not be captured.") from exc
+    except OSError:
+        snapshot_failed = True
+    if snapshot_failed:
+        raise CodexProcessBoundaryError("Workspace snapshot could not be captured.")
 
     canonical = json.dumps(
         [entry.fingerprint_value() for entry in entries],
@@ -179,12 +185,15 @@ def _workspace_before_launch(root: Path) -> tuple[Path, WorkspaceSnapshot]:
     """Resolve and snapshot one exact non-link directory without leaking OS errors."""
 
     unresolved = Path(root)
+    workspace_unavailable = False
     try:
         before_resolution = unresolved.lstat()
     except OSError:
+        workspace_unavailable = True
+    if workspace_unavailable:
         raise CodexWorkspaceUnavailableBeforeLaunch(
             "Workspace is unavailable before Codex process launch."
-        ) from None
+        )
     if _is_link_or_reparse(before_resolution):
         raise CodexWorkspaceLinkSubstitutionBeforeLaunch(
             "Workspace link substitution was rejected before Codex process launch."
@@ -193,28 +202,30 @@ def _workspace_before_launch(root: Path) -> tuple[Path, WorkspaceSnapshot]:
         raise CodexWorkspaceTypeChangedBeforeLaunch(
             "Workspace is no longer a directory before Codex process launch."
         )
+    workspace_unavailable = False
     try:
         resolved = unresolved.resolve(strict=True)
     except OSError:
+        workspace_unavailable = True
+    if workspace_unavailable:
         raise CodexWorkspaceUnavailableBeforeLaunch(
             "Workspace is unavailable before Codex process launch."
-        ) from None
+        )
     if resolved != unresolved.absolute():
         raise CodexWorkspaceLinkSubstitutionBeforeLaunch(
             "Workspace link substitution was rejected before Codex process launch."
         )
+    validation_failure: str | None = None
     try:
         snapshot = capture_workspace(resolved)
         after_snapshot = unresolved.lstat()
         resolved_after = unresolved.resolve(strict=True)
     except CodexProcessBoundaryError:
-        raise CodexWorkspaceUnavailableBeforeLaunch(
-            "Workspace validation failed before Codex process launch."
-        ) from None
+        validation_failure = "Workspace validation failed before Codex process launch."
     except OSError:
-        raise CodexWorkspaceUnavailableBeforeLaunch(
-            "Workspace is unavailable before Codex process launch."
-        ) from None
+        validation_failure = "Workspace is unavailable before Codex process launch."
+    if validation_failure is not None:
+        raise CodexWorkspaceUnavailableBeforeLaunch(validation_failure)
     if _is_link_or_reparse(after_snapshot) or resolved_after != resolved:
         raise CodexWorkspaceLinkSubstitutionBeforeLaunch(
             "Workspace link substitution was rejected before Codex process launch."
@@ -239,6 +250,7 @@ def _invocation_paths(
 ) -> Iterator[tuple[Path, Path]]:
     """Create adapter-owned launch artifacts behind a sanitized OS boundary."""
 
+    preparation_failed = False
     try:
         with tempfile.TemporaryDirectory(prefix="continuity-codex-") as temp_name:
             temporary_root = Path(temp_name).resolve()
@@ -252,9 +264,11 @@ def _invocation_paths(
             )
             yield schema_path, response_path
     except OSError:
+        preparation_failed = True
+    if preparation_failed:
         raise CodexProcessBoundaryError(
             "Codex pre-launch boundary preparation failed."
-        ) from None
+        )
 
 
 def codex_environment(
@@ -450,6 +464,7 @@ class CodexCliProcessAdapter:
             raise CodexWorkspaceChangedBeforeLaunch(
                 "Workspace changed before Codex process launch."
             )
+        environment_failed = False
         try:
             environment = codex_environment(
                 workspace,
@@ -457,9 +472,11 @@ class CodexCliProcessAdapter:
                 excluded_paths=request.excluded_environment_paths,
             )
         except OSError:
+            environment_failed = True
+        if environment_failed:
             raise CodexProcessBoundaryError(
                 "Codex pre-launch environment validation failed."
-            ) from None
+            )
         completed: subprocess.CompletedProcess[str] | None = None
         timed_out = False
         interrupted = False
@@ -534,12 +551,15 @@ class CodexCliProcessAdapter:
         )
 
     def _revalidate_executable(self) -> None:
+        validation_failed = False
         try:
             current = _executable_identity(self.resolved_executable)
-        except (OSError, CodexProcessBoundaryError) as exc:
+        except (OSError, CodexProcessBoundaryError):
+            validation_failed = True
+        if validation_failed:
             raise CodexProcessBoundaryError(
                 "Codex executable identity validation failed before launch."
-            ) from exc
+            )
         if current != self.executable_identity:
             raise CodexProcessBoundaryError(
                 "Codex executable identity changed after capability discovery."

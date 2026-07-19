@@ -116,6 +116,21 @@ class DeleteWorkspaceBeforeInvokeAdapter(CodexCliProcessAdapter):
         return super().invoke(request)
 
 
+def _full_exception_graph(exc: BaseException) -> list[BaseException]:
+    seen_ids: set[int] = set()
+    graph: list[BaseException] = []
+    frontier: list[BaseException | None] = [exc]
+    while frontier:
+        current = frontier.pop()
+        if current is None or id(current) in seen_ids:
+            continue
+        seen_ids.add(id(current))
+        graph.append(current)
+        frontier.append(current.__cause__)
+        frontier.append(current.__context__)
+    return graph
+
+
 def test_workspace_deleted_before_adapter_launch_is_typed_persisted_and_reusable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -161,13 +176,15 @@ def test_workspace_deleted_before_adapter_launch_is_typed_persisted_and_reusable
             CodexOperationRequest("Inspect only this workspace.", SCHEMA, 5),
         )
 
-    # Public exception text and its complete cause chain stay typed and do not
+    # Public exception text and its complete exception graph stay typed and do not
     # disclose the deleted workspace or the underlying FileNotFoundError.
-    current: BaseException | None = captured.value
-    while current is not None:
-        assert not isinstance(current, (OSError, FileNotFoundError))
+    for current in _full_exception_graph(captured.value):
+        assert not isinstance(
+            current, (OSError, FileNotFoundError, PermissionError)
+        )
         assert str(root) not in str(current)
-        current = current.__cause__
+        assert str(root) not in repr(current.args)
+        assert str(root) not in str(getattr(current, "filename", ""))
 
     retained = store.load(session.controller_session_id)
     assert captured.value.receipt is not None

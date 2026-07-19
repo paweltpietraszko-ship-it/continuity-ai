@@ -20,6 +20,7 @@ from continuity_ai.openai_provider import OpenAIReasoningProvider
 from continuity_ai.codex_process import (
     CodexCliCapabilities,
     CodexCliProcessAdapter,
+    CodexProcessBoundaryError,
     workspace_fingerprint,
 )
 from continuity_ai.codex_session import (
@@ -27,6 +28,7 @@ from continuity_ai.codex_session import (
     CodexControllerSession,
     CodexOperation,
     CodexLimitReached,
+    CodexNotInstalled,
     CodexNotAuthenticated,
     CodexOperationRequest,
     CodexSessionBusy,
@@ -638,12 +640,110 @@ def _controller_with_prelaunch_action(
     )
 
 
-def _assert_sanitized_prelaunch_failure(error: BaseException, root: Path) -> None:
-    current: BaseException | None = error
-    while current is not None:
-        assert not isinstance(current, OSError)
-        assert str(root) not in str(current)
-        current = current.__cause__
+def _full_exception_graph(error: BaseException) -> list[BaseException]:
+    seen_ids: set[int] = set()
+    graph: list[BaseException] = []
+    frontier: list[BaseException | None] = [error]
+    while frontier:
+        current = frontier.pop()
+        if current is None or id(current) in seen_ids:
+            continue
+        seen_ids.add(id(current))
+        graph.append(current)
+        frontier.append(current.__cause__)
+        frontier.append(current.__context__)
+    return graph
+
+
+def _assert_sanitized_prelaunch_failure(
+    error: BaseException, root: Path, *forbidden_values: object
+) -> None:
+    for current in _full_exception_graph(error):
+        assert not isinstance(
+            current, (OSError, FileNotFoundError, PermissionError)
+        )
+        exposed = (
+            str(current),
+            repr(current),
+            repr(current.args),
+            str(getattr(current, "filename", "")),
+        )
+        for forbidden in (root, *forbidden_values):
+            value = str(forbidden)
+            assert value
+            assert all(value not in candidate for candidate in exposed)
+
+
+def test_missing_workspace_resolution_os_error_is_fully_severed(
+    tmp_path: Path,
+) -> None:
+    controller, _, runner = _controller(tmp_path)
+    missing = tmp_path / "secret-missing-workspace"
+
+    with pytest.raises(WorkspaceMismatch) as captured:
+        controller.create_session(missing)
+
+    assert str(captured.value) == "Workspace root could not be resolved."
+    _assert_sanitized_prelaunch_failure(
+        captured.value, missing, tmp_path, "secret-missing-workspace"
+    )
+    assert runner.calls == []
+
+
+def test_workspace_snapshot_os_error_is_fully_severed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _workspace(tmp_path, content="audit-secret-source-content")
+    source_path = root / "source.txt"
+    original_read_bytes = Path.read_bytes
+
+    def deny_source_read(path: Path) -> bytes:
+        if path == source_path:
+            raise PermissionError(
+                13, "credential=audit-secret-snapshot", str(source_path)
+            )
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", deny_source_read)
+    with pytest.raises(CodexProcessBoundaryError) as captured:
+        workspace_fingerprint(root)
+
+    assert str(captured.value) == "Workspace snapshot could not be captured."
+    _assert_sanitized_prelaunch_failure(
+        captured.value,
+        root,
+        tmp_path,
+        source_path,
+        "credential=audit-secret-snapshot",
+        "audit-secret-source-content",
+    )
+
+
+def test_missing_codex_discovery_file_error_is_fully_severed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_executable = tmp_path / "secret-codex.exe"
+
+    def fail_discovery(cls: type[CodexCliProcessAdapter], executable: str):
+        raise FileNotFoundError(2, "credential=audit-secret-codex", secret_executable)
+
+    monkeypatch.setattr(
+        CodexCliProcessAdapter, "discover", classmethod(fail_discovery)
+    )
+    with pytest.raises(CodexNotInstalled) as captured:
+        CodexSessionController.with_local_codex(
+            JsonSessionStore(tmp_path / "sessions.json")
+        )
+
+    assert str(captured.value) == "Codex executable is not installed."
+    _assert_sanitized_prelaunch_failure(
+        captured.value,
+        secret_executable,
+        tmp_path,
+        "credential=audit-secret-codex",
+    )
 
 
 def test_deleted_workspace_prelaunch_failure_is_typed_persisted_and_released(
@@ -659,7 +759,7 @@ def test_deleted_workspace_prelaunch_failure_is_typed_persisted_and_released(
     with pytest.raises(WorkspaceChanged) as captured:
         controller.start_investigation(session.controller_session_id, root, _request())
 
-    _assert_sanitized_prelaunch_failure(captured.value, root)
+    _assert_sanitized_prelaunch_failure(captured.value, root, tmp_path, "alpha")
     retained = store.load(session.controller_session_id)
     assert retained.codex_process_active is False
     assert retained.active_operation is None
@@ -696,11 +796,113 @@ def test_permission_error_prelaunch_is_typed_sanitized_and_has_no_fallback(
     with pytest.raises(WorkspaceChanged) as captured:
         controller.start_investigation(session.controller_session_id, root, _request())
 
-    _assert_sanitized_prelaunch_failure(captured.value, root)
+    _assert_sanitized_prelaunch_failure(
+        captured.value,
+        root,
+        tmp_path,
+        "C:/secret/customer/source.txt",
+        "secret",
+        "alpha",
+    )
     assert "secret" not in str(captured.value)
     assert provider_calls == 0
     assert runner.calls == []
     assert store.load(session.controller_session_id).codex_process_active is False
+
+
+def test_environment_preparation_os_error_is_fully_severed_and_released(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_path = tmp_path / "secret-environment"
+    provider_calls = 0
+
+    def forbidden_provider(self: Any, client: Any = None) -> None:
+        nonlocal provider_calls
+        provider_calls += 1
+
+    def fail_environment(*args: Any, **kwargs: Any) -> dict[str, str]:
+        raise PermissionError(
+            13, "credential=audit-secret-environment", str(secret_path)
+        )
+
+    monkeypatch.setattr(OpenAIReasoningProvider, "__init__", forbidden_provider)
+    monkeypatch.setattr(
+        codex_process_module, "codex_environment", fail_environment
+    )
+    controller, store, runner = _controller(tmp_path)
+    root = _workspace(tmp_path)
+    session = controller.create_session(root)
+    store_document = store.path.read_text(encoding="utf-8")
+
+    with pytest.raises(CodexUnavailable) as captured:
+        controller.start_investigation(session.controller_session_id, root, _request())
+
+    assert str(captured.value) == "Codex process boundary is unavailable."
+    _assert_sanitized_prelaunch_failure(
+        captured.value,
+        root,
+        tmp_path,
+        secret_path,
+        "credential=audit-secret-environment",
+        "alpha",
+        store_document,
+    )
+    retained = store.load(session.controller_session_id)
+    assert captured.value.receipt is not None
+    assert retained.last_invocation_receipt == captured.value.receipt
+    assert retained.last_successful_invocation_receipt is None
+    assert retained.active_operation is None
+    assert retained.codex_process_active is False
+    assert runner.calls == []
+    assert provider_calls == 0
+
+
+def test_executable_revalidation_os_error_is_fully_severed_and_released(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_calls = 0
+    secret_executable = tmp_path / "secret-revalidated-codex.exe"
+
+    def forbidden_provider(self: Any, client: Any = None) -> None:
+        nonlocal provider_calls
+        provider_calls += 1
+
+    controller, store, runner = _controller(tmp_path)
+    root = _workspace(tmp_path, content="audit-secret-source-content")
+    session = controller.create_session(root)
+    store_document = store.path.read_text(encoding="utf-8")
+
+    def fail_identity(path: Path) -> object:
+        raise PermissionError(
+            13, "credential=audit-secret-executable", str(secret_executable)
+        )
+
+    monkeypatch.setattr(OpenAIReasoningProvider, "__init__", forbidden_provider)
+    monkeypatch.setattr(codex_process_module, "_executable_identity", fail_identity)
+
+    with pytest.raises(CodexUnavailable) as captured:
+        controller.start_investigation(session.controller_session_id, root, _request())
+
+    assert str(captured.value) == "Codex process boundary is unavailable."
+    _assert_sanitized_prelaunch_failure(
+        captured.value,
+        root,
+        tmp_path,
+        secret_executable,
+        "credential=audit-secret-executable",
+        "audit-secret-source-content",
+        store_document,
+    )
+    retained = store.load(session.controller_session_id)
+    assert captured.value.receipt is not None
+    assert retained.last_invocation_receipt == captured.value.receipt
+    assert retained.last_successful_invocation_receipt is None
+    assert retained.active_operation is None
+    assert retained.codex_process_active is False
+    assert runner.calls == []
+    assert provider_calls == 0
 
 
 def test_workspace_directory_to_file_change_is_rejected_before_launch(
@@ -716,11 +918,16 @@ def test_workspace_directory_to_file_change_is_rejected_before_launch(
     root = _workspace(tmp_path)
     session = controller.create_session(root)
 
-    with pytest.raises(WorkspaceChanged):
+    with pytest.raises(WorkspaceChanged) as captured:
         controller.start_investigation(session.controller_session_id, root, _request())
 
+    _assert_sanitized_prelaunch_failure(
+        captured.value, root, tmp_path, "substitution", "alpha"
+    )
     assert runner.calls == []
-    assert store.load(session.controller_session_id).active_operation is None
+    retained = store.load(session.controller_session_id)
+    assert retained.active_operation is None
+    assert retained.codex_process_active is False
 
 
 def test_workspace_reparse_substitution_is_rejected_before_launch(
@@ -734,11 +941,14 @@ def test_workspace_reparse_substitution_is_rejected_before_launch(
     root = _workspace(tmp_path)
     session = controller.create_session(root)
 
-    with pytest.raises(WorkspaceChanged):
+    with pytest.raises(WorkspaceChanged) as captured:
         controller.start_investigation(session.controller_session_id, root, _request())
 
+    _assert_sanitized_prelaunch_failure(captured.value, root, tmp_path, "alpha")
     assert runner.calls == []
-    assert store.load(session.controller_session_id).active_operation is None
+    retained = store.load(session.controller_session_id)
+    assert retained.active_operation is None
+    assert retained.codex_process_active is False
 
 
 def test_prelaunch_failure_preserves_prior_successful_receipt(tmp_path: Path) -> None:
@@ -765,6 +975,7 @@ def test_prelaunch_failure_preserves_prior_successful_receipt(tmp_path: Path) ->
             _request(),
         )
 
+    _assert_sanitized_prelaunch_failure(captured.value, root, tmp_path, "alpha")
     retained = store.load(created.controller_session_id)
     assert retained.last_successful_invocation_receipt == successful.receipt
     assert retained.last_invocation_receipt == captured.value.receipt
@@ -803,6 +1014,37 @@ def test_unrelated_session_survives_session_local_cas(tmp_path: Path) -> None:
     assert store.load(second.controller_session_id).sanitized_error_code == "second"
 
 
+def test_session_store_read_os_error_is_fully_severed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, store, _ = _controller(tmp_path)
+    created = controller.create_session(_workspace(tmp_path))
+    store_document = store.path.read_text(encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def deny_store_read(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == store.path:
+            raise PermissionError(
+                13, "credential=audit-secret-store-read", str(store.path)
+            )
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", deny_store_read)
+    with pytest.raises(CorruptSessionState) as captured:
+        store.load(created.controller_session_id)
+
+    assert str(captured.value) == "Session state is corrupt."
+    _assert_sanitized_prelaunch_failure(
+        captured.value,
+        store.path,
+        tmp_path,
+        "credential=audit-secret-store-read",
+        store_document,
+        "alpha",
+    )
+
+
 def test_atomic_replace_failure_does_not_advance_revision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -810,6 +1052,7 @@ def test_atomic_replace_failure_does_not_advance_revision(
     controller, store, _ = _controller(tmp_path)
     created = controller.create_session(_workspace(tmp_path))
     snapshot = store.load(created.controller_session_id)
+    store_document = store.path.read_text(encoding="utf-8")
     original_replace = Path.replace
 
     def fail_replace(path: Path, target: Path) -> Path:
@@ -821,7 +1064,15 @@ def test_atomic_replace_failure_does_not_advance_revision(
     with pytest.raises(SessionPersistenceError) as captured:
         store.save(replace(snapshot, sanitized_error_code="not-durable"))
 
-    assert captured.value.__cause__ is None
+    assert str(captured.value) == "Session state could not be persisted atomically."
+    _assert_sanitized_prelaunch_failure(
+        captured.value,
+        store.path,
+        tmp_path,
+        "C:/secret/store.json",
+        "secret",
+        store_document,
+    )
     assert store.load(created.controller_session_id) == snapshot
 
 
@@ -837,6 +1088,47 @@ def test_lock_acquisition_failure_is_fail_closed(tmp_path: Path) -> None:
         store.save(replace(snapshot, sanitized_error_code="not-durable"))
 
     assert str(captured.value) == "Session store lock is unavailable."
+    _assert_sanitized_prelaunch_failure(
+        captured.value, lock_path, tmp_path, "not-durable"
+    )
+    assert store.load(created.controller_session_id) == snapshot
+
+
+def test_lock_os_error_is_fully_severed_without_durable_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, store, _ = _controller(tmp_path)
+    created = controller.create_session(_workspace(tmp_path))
+    snapshot = store.load(created.controller_session_id)
+    store_document = store.path.read_text(encoding="utf-8")
+    lock_path = store.path.parent / f".{store.path.name}.lock"
+    original_open = Path.open
+    denied = False
+
+    def deny_lock_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        nonlocal denied
+        if Path(path) == lock_path and not denied:
+            denied = True
+            raise PermissionError(
+                13, "credential=audit-secret-lock", str(lock_path)
+            )
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_lock_open)
+    with pytest.raises(SessionPersistenceError) as captured:
+        store.save(replace(snapshot, sanitized_error_code="not-durable"))
+
+    assert denied is True
+    assert str(captured.value) == "Session store lock is unavailable."
+    _assert_sanitized_prelaunch_failure(
+        captured.value,
+        lock_path,
+        tmp_path,
+        "credential=audit-secret-lock",
+        store_document,
+        "not-durable",
+    )
     assert store.load(created.controller_session_id) == snapshot
 
 
