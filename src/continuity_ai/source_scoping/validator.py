@@ -5,13 +5,14 @@ from typing import Any
 
 from continuity_ai.errors import ValidationError
 from continuity_ai.source_scoping.domain import (
-    ASSOCIATION_STATUSES,
-    DECISION_BASES,
     SCHEMA_VERSION,
     SourceScopingDecision,
     SourceScopingResult,
 )
-from continuity_ai.source_scoping.validation_graph import validate_context_graph
+from continuity_ai.source_scoping.validation_graph import (
+    validate_context_graph,
+    validate_decision_relations,
+)
 
 _RESULT_KEYS = {
     "schema_version",
@@ -30,13 +31,6 @@ _DECISION_KEYS = {
     "span_ids",
     "related_evidence_ids",
 }
-_ALLOWED_BASIS_BY_STATUS = {
-    "included": {"explicit_target", "corroborated_context"},
-    "excluded": {"explicit_other_project", "corroborated_other_project"},
-    "ambiguous": {"conflicting_context", "insufficient_context"},
-}
-_CONTEXTUAL_BASES = {"corroborated_context", "corroborated_other_project"}
-_EXPLICIT_BASES = {"explicit_target", "explicit_other_project"}
 
 
 def _canonical_project(value: Any) -> str:
@@ -100,10 +94,6 @@ def _decision_from_payload(
 
     status = payload["association_status"]
     basis = payload["basis"]
-    if status not in ASSOCIATION_STATUSES or basis not in DECISION_BASES:
-        raise ValidationError()
-    if basis not in _ALLOWED_BASIS_BY_STATUS[status]:
-        raise ValidationError()
 
     rationale = payload["rationale"]
     if not isinstance(rationale, str) or not rationale.strip() or len(rationale) > 1000:
@@ -119,10 +109,7 @@ def _decision_from_payload(
         for evidence_id in related
     ):
         raise ValidationError()
-    if basis in _CONTEXTUAL_BASES and not related:
-        raise ValidationError()
-    if basis in _EXPLICIT_BASES and related:
-        raise ValidationError()
+    validate_decision_relations(status, basis, related)
 
     return SourceScopingDecision(
         evidence_id=expected_evidence_id,
