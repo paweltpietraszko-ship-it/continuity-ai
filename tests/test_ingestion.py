@@ -18,7 +18,7 @@ from continuity_ai.aurora_fixture import ARTIFACT_ROOT, generate_project_aurora_
 from continuity_ai.ingestion import ArtifactIngestionError, ingest_artifacts
 from continuity_ai.models import EvidenceRecord
 from continuity_ai.reasoning import answer_morning_question
-from continuity_ai.reasoning_pipeline import FakeAuroraProvider
+from continuity_ai.reasoning_pipeline import DeterministicOfflineReasoningProvider
 
 MANIFEST_RELATIVE_PATH = ARTIFACT_ROOT / "evidence_manifest.json"
 
@@ -677,6 +677,6 @@ def test_production_reasoning_runs_offline_fake_provider(tmp_path: Path) -> None
     result = answer_morning_question(
         tmp_path / ARTIFACT_ROOT,
         "placeholder question",
-        provider=FakeAuroraProvider(),
+        provider=DeterministicOfflineReasoningProvider(),
     )
-    assert result["analysis_status"] == "break_found"
+    assert result["analysis_status"] == "no_material_break_found"

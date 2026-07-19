@@ -8,7 +8,7 @@ import sys
 import pytest
 
 
-def _runner_environment(provider: str | None = "fake_aurora") -> dict[str, str]:
+def _runner_environment(provider: str | None = "deterministic_offline") -> dict[str, str]:
     environment = os.environ.copy()
     if provider is None:
         environment.pop("CONTINUITY_REASONING_PROVIDER", None)
@@ -20,7 +20,7 @@ def _runner_environment(provider: str | None = "fake_aurora") -> dict[str, str]:
 def _run_bridge(
     payload: bytes,
     *,
-    provider: str | None = "fake_aurora",
+    provider: str | None = "deterministic_offline",
     timeout: float = 10,
 ) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(

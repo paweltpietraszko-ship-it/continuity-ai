@@ -19,7 +19,7 @@ from continuity_ai.domain import ReasoningEvidence
 from continuity_ai.errors import ValidationError
 from continuity_ai.evidence import build_spans, hydrate_citations
 from continuity_ai.ingestion import ArtifactIngestionError, ingest_artifacts, read_project_name
-from continuity_ai.reasoning_pipeline import FakeAuroraProvider, _grounded_statement, validate_analysis
+from continuity_ai.reasoning_pipeline import DeterministicOfflineReasoningProvider, _grounded_statement, validate_analysis
 from continuity_ai.vault import Vault
 
 
@@ -60,7 +60,7 @@ def _initialize_load_and_analyze(
 ) -> tuple[Bridge, Path, Path, dict]:
     artifact_root = _write_project(base / "artifacts", project, token)
     vault_path = base / "vault.bin"
-    bridge = Bridge(provider=FakeAuroraProvider())
+    bridge = Bridge(provider=DeterministicOfflineReasoningProvider())
     initialized = bridge.handle(
         {
             "command": "initialize_vault",

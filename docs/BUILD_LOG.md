@@ -205,11 +205,35 @@
 - Verification: git diff --check passed.
 - Push: normal, non-force push.
 - Verification: the final working tree was clean.
-- Repaired: reasoning-provider selection is explicit. CONTINUITY_REASONING_PROVIDER is required when no provider is injected; supported configured values are openai and fake_aurora; surrounding whitespace is ignored; and matching is case-insensitive.
+- Repaired: reasoning-provider selection is explicit. CONTINUITY_REASONING_PROVIDER is required when no provider is injected; supported configured values are openai and deterministic_offline; surrounding whitespace is ignored; and matching is case-insensitive.
 - Repaired: missing, blank, or unsupported configured values fail safely; there is no implicit fake-provider fallback; an injected provider has precedence; and a falsy injected provider is not silently replaced.
 - Network boundary: provider selection itself does not call the network, and importing the module does not call the network.
 - Integration behavior: Bridge without injection requires explicit configuration, while answer_morning_question uses the shared provider factory when no provider is injected.
-- Provider status: FakeAuroraProvider remains an explicitly selected test/demo provider only. It is not production reasoning and is not evidence of GPT-5.6 operation.
+- Provider status: DeterministicOfflineReasoningProvider remains an explicitly selected test/demo provider only. It is not production reasoning and is not evidence of GPT-5.6 operation.
+
+## 2026-07-19 Generic Reasoning Fake Hardening
+
+- Replaced the fixture-named, position-dependent reasoning fake with
+  `DeterministicOfflineReasoningProvider`.
+- Renamed the explicit selector to `deterministic_offline` and the snapshot
+  provider ID to `deterministic-offline-v1`.
+- The offline fake now identity-orders evidence and spans, assigns only the
+  neutral `none` role, emits canonical Project Report evidence gaps, and makes
+  no fixture-specific break or next-action claim.
+- Invalid questions, empty or duplicate evidence, and incomplete, duplicate, or
+  foreign span ownership fail closed.
+- This deterministic fake is test/offline-fallback infrastructure only and does
+  not prove real-model generalization.
+- Focused hardening, selector, and bridge end-to-end tests: 92 passed.
+- Full backend suite: 247 passed.
+- Protected-path audit: source scoping, bridge, vault, desktop, and fixture
+  generator code were not modified.
+- Competition-grade architecture follow-up: separated the typed reasoning
+  contract, deterministic provider, canonical validator, and orchestration facade.
+  Evidence/span identity and canonical evidence-gap text each have one shared
+  implementation used by both generation and validation boundaries.
+- Architecture-focused provider/validator/persistence/report suite: 161 passed.
+- Full backend suite after the architecture follow-up: 249 passed.
 
 ## 2026-07-18 Semantic Project and Decision-Scope Resolution Blocker
 

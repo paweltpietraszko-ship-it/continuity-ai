@@ -4,15 +4,17 @@ from __future__ import annotations
 import os
 
 from continuity_ai.errors import ProviderError
+from continuity_ai.deterministic_offline_provider import (
+    DeterministicOfflineReasoningProvider,
+)
 from continuity_ai.openai_provider import OpenAIReasoningProvider
-from continuity_ai.reasoning_pipeline import FakeAuroraProvider
 
 
 CONTINUITY_REASONING_PROVIDER = "CONTINUITY_REASONING_PROVIDER"
 OPENAI_PROVIDER = "openai"
-FAKE_AURORA_PROVIDER = "fake_aurora"
+DETERMINISTIC_OFFLINE_PROVIDER = "deterministic_offline"
 SUPPORTED_REASONING_PROVIDERS = frozenset(
-    {OPENAI_PROVIDER, FAKE_AURORA_PROVIDER}
+    {OPENAI_PROVIDER, DETERMINISTIC_OFFLINE_PROVIDER}
 )
 
 
@@ -24,6 +26,6 @@ def create_reasoning_provider():
     normalized = configured.strip().casefold()
     if normalized == OPENAI_PROVIDER:
         return OpenAIReasoningProvider()
-    if normalized == FAKE_AURORA_PROVIDER:
-        return FakeAuroraProvider()
+    if normalized == DETERMINISTIC_OFFLINE_PROVIDER:
+        return DeterministicOfflineReasoningProvider()
     raise ProviderError()
