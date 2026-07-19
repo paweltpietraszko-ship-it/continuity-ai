@@ -24,6 +24,14 @@ from continuity_ai.integration.bridge_vertical_flow import (
     start_real_scoping_investigation,
     vertical_flow_ready_for_reporting,
 )
+from continuity_ai.integration.diagnostic_proof_bridge_flow import (
+    DiagnosticFlowState,
+    confirm_diagnostic_scope,
+    reset_diagnostic_state,
+    run_diagnostic_tamper_check,
+    start_diagnostic_scoping,
+    start_diagnostic_workspace,
+)
 from continuity_ai.provider_selection import create_reasoning_provider
 from continuity_ai.reasoning_pipeline import run_analysis
 from continuity_ai.retained_analysis import RETAINED_ANALYSIS_NONE, RETAINED_ANALYSIS_VALID, restore_latest
@@ -54,6 +62,7 @@ class Bridge:
         self.source_scoping = SourceScopingSession(source_scoping_provider)
         self._source_registry: dict = {}
         self._vertical = VerticalFlowState()
+        self._diagnostic = DiagnosticFlowState()
 
     def handle(self, cmd) -> dict:
         command_name = cmd.get("command") if isinstance(cmd, dict) else None
@@ -381,6 +390,29 @@ class Bridge:
                 data.update(_analysis_fields(self.analysis))
                 data["citation_cards"] = self._hydrate_retained_cards(saved, self.analysis)
             return data
+
+        if name == "diagnostic_prepare_workspace":
+            fingerprint_prefix = start_diagnostic_workspace(self._diagnostic)
+            return {"phase": self._diagnostic.phase, "input_fingerprint_prefix": fingerprint_prefix}
+
+        if name == "diagnostic_run_scoping":
+            decisions = start_diagnostic_scoping(self._diagnostic)
+            return {"phase": self._diagnostic.phase, **decisions}
+
+        if name == "diagnostic_confirm_scope":
+            overrides = cmd.get("overrides")
+            if not isinstance(overrides, dict):
+                raise ValidationError()
+            report = confirm_diagnostic_scope(self._diagnostic, overrides)
+            return {"phase": self._diagnostic.phase, **report}
+
+        if name == "diagnostic_run_tamper_check":
+            report = run_diagnostic_tamper_check(self._diagnostic)
+            return {"phase": self._diagnostic.phase, **report}
+
+        if name == "diagnostic_reset":
+            reset_diagnostic_state(self._diagnostic)
+            return {"phase": self._diagnostic.phase}
 
         raise PublicError("unknown_command", "The command is not supported.")
 

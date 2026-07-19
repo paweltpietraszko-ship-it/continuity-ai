@@ -6,7 +6,8 @@ export type ViewName =
   | "breakDetail"
   | "genericReport"
   | "liveProject"
-  | "filmDemo";
+  | "filmDemo"
+  | "diagnosticProof";
 
 export type DrawerName = "sources" | "conversation" | null;
 

@@ -6,6 +6,10 @@ import type {
   ConfirmAttestationData,
   ConfirmSourceScopeData,
   ConversationData,
+  DiagnosticPrepareData,
+  DiagnosticReportData,
+  DiagnosticResetData,
+  DiagnosticScopingData,
   ScopeProjectSourcesData,
   SourceFinalStatus,
   WorkspaceState,
@@ -96,6 +100,28 @@ export class ContinuitySession {
 
   async workspaceState(): Promise<WorkspaceState> {
     return this.transport.request({ command: "get_workspace_state" });
+  }
+
+  async prepareDiagnosticWorkspace(): Promise<DiagnosticPrepareData> {
+    return this.transport.request({ command: "diagnostic_prepare_workspace" });
+  }
+
+  async runDiagnosticScoping(): Promise<DiagnosticScopingData> {
+    return this.transport.request({ command: "diagnostic_run_scoping" });
+  }
+
+  async confirmDiagnosticScope(
+    overrides: Readonly<Record<string, SourceFinalStatus>>,
+  ): Promise<DiagnosticReportData> {
+    return this.transport.request({ command: "diagnostic_confirm_scope", overrides });
+  }
+
+  async runDiagnosticTamperCheck(): Promise<DiagnosticReportData> {
+    return this.transport.request({ command: "diagnostic_run_tamper_check" });
+  }
+
+  async resetDiagnosticState(): Promise<DiagnosticResetData> {
+    return this.transport.request({ command: "diagnostic_reset" });
   }
 }
 

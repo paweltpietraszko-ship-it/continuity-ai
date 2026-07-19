@@ -9,7 +9,12 @@ export type BridgeCommandName =
   | "send_message"
   | "confirm_attestation"
   | "confirm_analysis_revision"
-  | "get_workspace_state";
+  | "get_workspace_state"
+  | "diagnostic_prepare_workspace"
+  | "diagnostic_run_scoping"
+  | "diagnostic_confirm_scope"
+  | "diagnostic_run_tamper_check"
+  | "diagnostic_reset";
 
 export interface PublicBridgeError {
   readonly code: string;
@@ -298,6 +303,50 @@ export interface ConfirmAnalysisRevisionData extends AnalysisProjection {
   readonly proposal_id: string;
 }
 
+export type DiagnosticPhase =
+  | "idle"
+  | "workspace_ready"
+  | "awaiting_review"
+  | "completed"
+  | "tampered";
+
+export interface DiagnosticDecision {
+  readonly evidence_id: string;
+  readonly association_status: SourceAssociationStatus;
+  readonly basis: SourceDecisionBasis;
+  readonly rationale: string;
+}
+
+export interface DiagnosticPrepareData {
+  readonly phase: DiagnosticPhase;
+  readonly input_fingerprint_prefix: string;
+}
+
+export interface DiagnosticScopingData {
+  readonly phase: DiagnosticPhase;
+  readonly target_project: string;
+  readonly decisions: readonly DiagnosticDecision[];
+}
+
+export type DiagnosticClaimStatus = "PASS" | "FAIL";
+
+export interface DiagnosticClaim {
+  readonly name: string;
+  readonly status: DiagnosticClaimStatus;
+  readonly observed: string;
+}
+
+export interface DiagnosticReportData {
+  readonly phase: DiagnosticPhase;
+  readonly result: DiagnosticClaimStatus;
+  readonly codex_session_id: string;
+  readonly claims: readonly DiagnosticClaim[];
+}
+
+export interface DiagnosticResetData {
+  readonly phase: DiagnosticPhase;
+}
+
 export type BridgeCommand =
   | { readonly command: "initialize_vault"; readonly path: string; readonly password: string; readonly owner_name?: string }
   | { readonly command: "unlock_vault"; readonly path: string; readonly password: string }
@@ -309,7 +358,12 @@ export type BridgeCommand =
   | { readonly command: "send_message"; readonly message: string; readonly revision_candidate?: unknown }
   | { readonly command: "confirm_attestation"; readonly proposal_id: string }
   | { readonly command: "confirm_analysis_revision"; readonly proposal_id: string }
-  | { readonly command: "get_workspace_state" };
+  | { readonly command: "get_workspace_state" }
+  | { readonly command: "diagnostic_prepare_workspace" }
+  | { readonly command: "diagnostic_run_scoping" }
+  | { readonly command: "diagnostic_confirm_scope"; readonly overrides: Readonly<Record<string, SourceFinalStatus>> }
+  | { readonly command: "diagnostic_run_tamper_check" }
+  | { readonly command: "diagnostic_reset" };
 
 export interface BridgeCommandResultMap {
   readonly initialize_vault: SessionData;
@@ -323,4 +377,9 @@ export interface BridgeCommandResultMap {
   readonly confirm_attestation: ConfirmAttestationData;
   readonly confirm_analysis_revision: ConfirmAnalysisRevisionData;
   readonly get_workspace_state: WorkspaceState;
+  readonly diagnostic_prepare_workspace: DiagnosticPrepareData;
+  readonly diagnostic_run_scoping: DiagnosticScopingData;
+  readonly diagnostic_confirm_scope: DiagnosticReportData;
+  readonly diagnostic_run_tamper_check: DiagnosticReportData;
+  readonly diagnostic_reset: DiagnosticResetData;
 }

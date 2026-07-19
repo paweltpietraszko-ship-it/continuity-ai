@@ -4,6 +4,7 @@ import { AppHeader } from "./components/AppHeader";
 import { AuroraReport } from "./components/AuroraReport";
 import { BreakDetail } from "./components/BreakDetail";
 import { ConversationDrawer } from "./components/ConversationDrawer";
+import { DiagnosticProof } from "./components/DiagnosticProof";
 import { GenericReport } from "./components/GenericReport";
 import { LiveProjectFlow } from "./components/LiveProjectFlow";
 import { SourcesDrawer } from "./components/SourcesDrawer";
@@ -39,6 +40,7 @@ function initialRoute(): { view: ViewName; project: ProjectKey } {
   const hash = window.location.hash.replace("#", "");
   if (hash === "workspace") return { view: "workspace", project: "aurora" };
   if (hash === "live-project") return { view: "liveProject", project: "aurora" };
+  if (hash === "diagnostic-proof") return { view: "diagnosticProof", project: "aurora" };
   if (hash === "film-demo") return { view: "filmDemo", project: "aurora" };
   if (hash === "aurora-break") return { view: "breakDetail", project: "aurora" };
   if (hash === "meridian" || hash === "ember") return { view: "genericReport", project: hash };
@@ -48,6 +50,7 @@ function initialRoute(): { view: ViewName; project: ProjectKey } {
 function routeHash(view: ViewName, project: ProjectKey): string {
   if (view === "workspace") return "workspace";
   if (view === "liveProject") return "live-project";
+  if (view === "diagnosticProof") return "diagnostic-proof";
   if (view === "filmDemo") return "film-demo";
   if (view === "breakDetail") return "aurora-break";
   if (view === "genericReport") return project;
@@ -235,9 +238,14 @@ export function App({ bootstrap = DEFAULT_BOOTSTRAP }: AppProps) {
           />
         ) : null}
         {view === "workspace" ? (
-          <Workspace onOpenProject={openProject} onOpenLiveProject={() => navigate("liveProject", project)} />
+          <Workspace
+            onOpenProject={openProject}
+            onOpenLiveProject={() => navigate("liveProject", project)}
+            onOpenDiagnosticProof={() => navigate("diagnosticProof", project)}
+          />
         ) : null}
         {view === "liveProject" ? <LiveProjectFlow onBack={() => navigate("workspace", project)} /> : null}
+        {view === "diagnosticProof" ? <DiagnosticProof onBack={() => navigate("workspace", project)} /> : null}
         {view === "breakDetail" ? (
           <BreakDetail
             evidence={evidence}

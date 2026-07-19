@@ -4,9 +4,10 @@ import type { ProjectKey } from "../types/workspace";
 interface WorkspaceProps {
   readonly onOpenProject: (project: ProjectKey) => void;
   readonly onOpenLiveProject: () => void;
+  readonly onOpenDiagnosticProof: () => void;
 }
 
-export function Workspace({ onOpenProject, onOpenLiveProject }: WorkspaceProps) {
+export function Workspace({ onOpenProject, onOpenLiveProject, onOpenDiagnosticProof }: WorkspaceProps) {
   return (
     <section className="view active" aria-label="Workspace">
       <div className="page-shell workspace-shell">
@@ -31,6 +32,23 @@ export function Workspace({ onOpenProject, onOpenLiveProject }: WorkspaceProps) 
             <span>No synthetic data — every screen reflects real backend responses.</span>
           </div>
           <div className="open-label">Open live flow →</div>
+        </button>
+
+        <button className="project-row live-project-row" type="button" onClick={onOpenDiagnosticProof}>
+          <div className="project-status-mark" aria-hidden="true" />
+          <div className="project-main">
+            <div className="project-meta"><span>Experimental</span><span>Isolated diagnostic</span></div>
+            <h2>Diagnostic Proof</h2>
+            <p>
+              Synthetic unseen workspace, real Codex Source Scoping, and a machine-evaluable PASS/FAIL proof —
+              separate from any real project data.
+            </p>
+          </div>
+          <div className="project-state">
+            <strong>No real project evidence involved</strong>
+            <span>Every source is synthetic and generated fresh for this run.</span>
+          </div>
+          <div className="open-label">Open diagnostic proof →</div>
         </button>
 
         <div className="project-list" role="group" aria-label="Projects">

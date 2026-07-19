@@ -386,3 +386,9 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .film-demo-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .film-demo-status { margin: 0; font-size: 12px; color: var(--ink-faint); }
 .film-demo-cut-point { margin-top: auto; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--rust-soft); color: var(--rust); font-size: 12px; font-weight: 650; letter-spacing: 0.03em; text-transform: uppercase; border: 1px solid rgba(208, 106, 88, 0.28); }
+
+.diagnostic-claims-table-wrap { overflow-x: auto; margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.diagnostic-claims-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.diagnostic-claims-table th { text-align: left; padding: 8px 10px; background: var(--paper-light); color: var(--ink-faint); font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
+.diagnostic-claims-table td { padding: 7px 10px; border-top: 1px solid var(--line); color: var(--ink-soft); vertical-align: top; }
+.diagnostic-claims-table td:first-child { color: var(--ink); font-weight: 600; white-space: nowrap; }
