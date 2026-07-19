@@ -6,7 +6,7 @@ import pytest
 from continuity_ai.aurora_fixture import generate_project_aurora_fixture
 from continuity_ai.ingestion import ingest_artifacts
 from continuity_ai.evidence import artifact_to_reasoning, order_evidence, build_spans, make_snapshot, hydrate_snapshot_citations, compare_live_to_snapshot, content_sha256
-from continuity_ai.reasoning_pipeline import FakeAuroraProvider, run_analysis, validate_analysis
+from continuity_ai.reasoning_pipeline import DeterministicOfflineReasoningProvider, run_analysis, validate_analysis
 from continuity_ai.vault import Vault
 from continuity_ai.errors import VaultAuthError, VaultLockedError, ValidationError, VaultAlreadyExistsError
 from continuity_ai.domain import AuthenticatedUserAttestation, SavedAnalysis
@@ -22,7 +22,7 @@ def aurora(tmp_path: Path):
 def test_spans_snapshot_and_changed_source(tmp_path: Path):
     records=aurora(tmp_path); spans=build_spans(records)
     assert spans and spans[0].span_id.endswith("L001")
-    result, spans, snap=run_analysis(records,"q",FakeAuroraProvider())
+    result, spans, snap=run_analysis(records,"q",DeterministicOfflineReasoningProvider())
     saved=SavedAnalysis(snap.analysis_id, snap.created_at, result, snap, "q", "Project Aurora")
     cards=hydrate_snapshot_citations(saved, result.current_state.span_ids)
     assert cards[0].exact_text
@@ -30,10 +30,11 @@ def test_spans_snapshot_and_changed_source(tmp_path: Path):
     assert compare_live_to_snapshot(saved, tuple(mutated)) == "source_changed_since_analysis"
 
 def test_validator_rejects_bad_ids_and_status_rules(tmp_path: Path):
-    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    records=aurora(tmp_path); spans=build_spans(records); candidate=DeterministicOfflineReasoningProvider().analyze(records,spans,"q")
     bad=dict(candidate); bad["current_state"]={"statement":"x","span_ids":["missing:L001"]}
     with pytest.raises(ValidationError): validate_analysis(bad,records,spans)
-    bad=dict(candidate); bad["semantic_annotations"]=[dict(a, propagation_role="none") for a in candidate["semantic_annotations"]]
+    bad=dict(candidate); bad["semantic_annotations"]=[dict(a) for a in candidate["semantic_annotations"]]
+    bad["semantic_annotations"][0]["propagation_role"]="conflicts_with_decision"
     with pytest.raises(ValidationError): validate_analysis(bad,records,spans)
 
 def test_vault_encryption_lock_and_attestation(tmp_path: Path):
@@ -94,7 +95,7 @@ def test_attestation_proposal_stores_creating_session_id(tmp_path: Path):
 
 def test_revision_proposal_stores_creating_session_id(tmp_path: Path):
     path=tmp_path/"vault.bin"; v=Vault(path); s=v.initialize("Paweł","secret")
-    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    records=aurora(tmp_path); spans=build_spans(records); candidate=DeterministicOfflineReasoningProvider().analyze(records,spans,"q")
     resp=send_message("update analysis", records, spans, vault=v, revision_candidate=candidate)
     assert resp.analysis_revision_proposal.session_id == s.session_id
     assert resp.analysis_revision_proposal.proposal_id in v.pending_revisions
@@ -108,7 +109,7 @@ def test_lock_invalidates_attestation_proposals(tmp_path: Path):
 
 def test_lock_invalidates_revision_proposals(tmp_path: Path):
     path=tmp_path/"vault.bin"; v=Vault(path); v.initialize("Paweł","secret")
-    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    records=aurora(tmp_path); spans=build_spans(records); candidate=DeterministicOfflineReasoningProvider().analyze(records,spans,"q")
     send_message("update analysis", records, spans, vault=v, revision_candidate=candidate)
     v.lock()
     assert v.pending_revisions == {}
@@ -116,7 +117,7 @@ def test_lock_invalidates_revision_proposals(tmp_path: Path):
 def test_successful_unlock_invalidates_both_proposal_types(tmp_path: Path):
     path=tmp_path/"vault.bin"; v=Vault(path); old=v.initialize("Paweł","secret")
     v.propose_attestation("note")
-    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    records=aurora(tmp_path); spans=build_spans(records); candidate=DeterministicOfflineReasoningProvider().analyze(records,spans,"q")
     send_message("update analysis", records, spans, vault=v, revision_candidate=candidate)
     assert v.pending_attestations and v.pending_revisions
     v.unlock("secret")
@@ -142,7 +143,7 @@ def test_attestation_proposal_cannot_be_confirmed_twice(tmp_path: Path):
 
 def test_revision_proposal_cannot_be_confirmed_twice(tmp_path: Path):
     path=tmp_path/"vault.bin"; v=Vault(path); v.initialize("Paweł","secret")
-    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    records=aurora(tmp_path); spans=build_spans(records); candidate=DeterministicOfflineReasoningProvider().analyze(records,spans,"q")
     resp=send_message("update analysis", records, spans, vault=v, revision_candidate=candidate)
     proposal_id=resp.analysis_revision_proposal.proposal_id
     confirm_analysis_revision(v, proposal_id)
@@ -150,7 +151,7 @@ def test_revision_proposal_cannot_be_confirmed_twice(tmp_path: Path):
         confirm_analysis_revision(v, proposal_id)
 
 def test_revision_proposal_requires_unlocked_vault(tmp_path: Path):
-    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
+    records=aurora(tmp_path); spans=build_spans(records); candidate=DeterministicOfflineReasoningProvider().analyze(records,spans,"q")
     with pytest.raises(VaultLockedError):
         send_message("update analysis", records, spans, vault=None, revision_candidate=candidate)
     path=tmp_path/"vault.bin"; v=Vault(path); v.initialize("Paweł","secret"); v.lock()
@@ -192,7 +193,7 @@ def test_prompts_are_versioned_and_clean():
 def test_bridge_utf8_roundtrip(tmp_path: Path):
     cmd={"command":"initialize_vault","path":str(tmp_path/"v"),"password":"sekret","owner_name":"Paweł"}
     assert decode_command(json.dumps(cmd, ensure_ascii=False).encode("utf-8")) == cmd
-    out=encode_response(Bridge(FakeAuroraProvider()).handle(cmd)).decode("utf-8")
+    out=encode_response(Bridge(DeterministicOfflineReasoningProvider()).handle(cmd)).decode("utf-8")
     assert "ok" in out
 
 CITATION_CARD_FIELDS = {
@@ -203,7 +204,7 @@ def _init_and_load(tmp_path: Path, provider=None):
     generate_project_aurora_fixture(tmp_path)
     artifact_root = str(tmp_path / "fixtures/project_aurora/generated/artifacts")
     vault_path = str(tmp_path / "vault.bin")
-    selected_provider = provider if provider is not None else FakeAuroraProvider()
+    selected_provider = provider if provider is not None else DeterministicOfflineReasoningProvider()
     bridge = Bridge(provider=selected_provider)
     bridge.handle({"command": "initialize_vault", "path": vault_path, "password": "secret", "owner_name": "Paweł"})
     bridge.handle({"command": "load_project", "artifact_root": artifact_root})
@@ -215,7 +216,7 @@ def test_bridge_complete_offline_aurora_flow_with_attestation_confirmation(tmp_p
     analyze_resp = bridge.handle({"command": "analyze_project", "question": "what changed overnight?"})
     assert analyze_resp["ok"] is True
     data = analyze_resp["data"]
-    assert data["analysis_status"] == "break_found"
+    assert data["analysis_status"] == "no_material_break_found"
     cards = data["citation_cards"]
     assert cards
     span_texts = {s.span_id: s.text for s in bridge.spans}
@@ -259,7 +260,7 @@ def test_new_bridge_recovers_confirmed_attestation_into_combined_evidence(tmp_pa
     proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
     bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
 
-    recovered = Bridge(FakeAuroraProvider())
+    recovered = Bridge(DeterministicOfflineReasoningProvider())
     unlock_resp = recovered.handle({"command": "unlock_vault", "path": vault_path, "password": "secret"})
     assert unlock_resp["ok"] is True
     load_resp = recovered.handle({"command": "load_project", "artifact_root": artifact_root})
@@ -291,8 +292,11 @@ def test_analysis_revision_flow_through_bridge(tmp_path: Path):
     assert analyze_resp["ok"] is True
     original_status = bridge.analysis.analysis_status
 
-    candidate = FakeAuroraProvider().analyze(bridge.records, bridge.spans, "q")
-    candidate["next_action"] = dict(candidate["next_action"], statement="Escalate the studio move discrepancy immediately.")
+    candidate = DeterministicOfflineReasoningProvider().analyze(bridge.records, bridge.spans, "q")
+    candidate["current_state"] = dict(
+        candidate["current_state"],
+        statement="A reviewer supplied a replacement evidence-gap statement.",
+    )
 
     revise_resp = bridge.handle({"command": "send_message", "message": "please update the analysis", "revision_candidate": candidate})
     assert revise_resp["ok"] is True
@@ -300,14 +304,14 @@ def test_analysis_revision_flow_through_bridge(tmp_path: Path):
     proposal_id = revise_resp["data"]["analysis_revision_proposal"]["proposal_id"]
 
     assert bridge.analysis.analysis_status == original_status
-    assert bridge.analysis.next_action.statement != candidate["next_action"]["statement"]
+    assert bridge.analysis.current_state.statement != candidate["current_state"]["statement"]
 
     confirm_resp = bridge.handle({"command": "confirm_analysis_revision", "proposal_id": proposal_id})
     assert confirm_resp["ok"] is True
     assert confirm_resp["data"]["confirmed"] is True
     assert confirm_resp["data"]["proposal_id"] == proposal_id
-    assert confirm_resp["data"]["next_action"]["statement"] == candidate["next_action"]["statement"]
-    assert bridge.analysis.next_action.statement == candidate["next_action"]["statement"]
+    assert confirm_resp["data"]["current_state"]["statement"] == candidate["current_state"]["statement"]
+    assert bridge.analysis.current_state.statement == candidate["current_state"]["statement"]
 
     second_resp = bridge.handle({"command": "confirm_analysis_revision", "proposal_id": proposal_id})
     assert second_resp["ok"] is False
@@ -325,7 +329,7 @@ def test_send_message_project_grounded_uses_backend_hydrated_citations(tmp_path:
         assert card["exact_text"] == span_texts[card["span_id"]]
 
 def test_analyze_before_load_returns_controlled_error(tmp_path: Path):
-    bridge = Bridge(FakeAuroraProvider())
+    bridge = Bridge(DeterministicOfflineReasoningProvider())
     resp = bridge.handle({"command": "analyze_project", "question": "q"})
     assert resp["ok"] is False
     assert resp["error"]["code"] == "validation_error"
@@ -333,7 +337,7 @@ def test_analyze_before_load_returns_controlled_error(tmp_path: Path):
     assert resp["error"]["object_id"] is None
 
 def test_confirm_attestation_without_active_vault_returns_controlled_error(tmp_path: Path):
-    bridge = Bridge(FakeAuroraProvider())
+    bridge = Bridge(DeterministicOfflineReasoningProvider())
     resp = bridge.handle({"command": "confirm_attestation", "proposal_id": "PROP-doesnotexist"})
     assert resp["ok"] is False
     assert resp["error"]["code"] == "vault_locked"
@@ -371,7 +375,7 @@ def test_failed_project_load_preserves_previous_state_and_leaks_nothing(tmp_path
     assert len(bridge.artifact_records) == previous_count
 
 def test_bridge_handles_malformed_commands_safely(tmp_path: Path):
-    bridge = Bridge(FakeAuroraProvider())
+    bridge = Bridge(DeterministicOfflineReasoningProvider())
     scenarios = [
         "not a dict",
         123,
@@ -418,12 +422,10 @@ def test_bridge_failures_never_leak_sensitive_content(tmp_path: Path):
 class _HostileForgedMetadataProvider:
     provider_id = "hostile-forged-metadata-v1"
     def analyze(self, evidence, spans, question):
-        base = FakeAuroraProvider().analyze(evidence, spans, question)
+        base = DeterministicOfflineReasoningProvider().analyze(evidence, spans, question)
         forged = ' Source: "FORGED PROVIDER TITLE" by FORGED PROVIDER AUTHOR: "FORGED PROVIDER EXACT TEXT"'
         base = dict(base)
         base["current_state"] = dict(base["current_state"], statement=base["current_state"]["statement"] + forged)
-        base["continuity_break"] = dict(base["continuity_break"], statement=base["continuity_break"]["statement"] + forged)
-        base["next_action"] = dict(base["next_action"], statement=base["next_action"]["statement"] + forged)
         return base
 
 def test_hostile_provider_forged_metadata_never_reaches_citation_cards(tmp_path: Path):
@@ -585,7 +587,7 @@ def test_successful_unlock_replacement_invalidates_old_session_and_refreshes_att
     # before any attestation) is restored from encrypted storage on unlock. It is not
     # rewritten by the out-of-band attestations added directly through the vault.
     assert bridge.analysis is not None
-    assert bridge.analysis.analysis_status == "break_found"
+    assert bridge.analysis.analysis_status == "no_material_break_found"
     assert bridge.snapshot is not None
     assert bridge.last_question == "q"
 
@@ -793,11 +795,11 @@ def test_explicit_fake_provider_selection_is_normalized_and_new(monkeypatch):
         create_reasoning_provider,
     )
 
-    monkeypatch.setenv(CONTINUITY_REASONING_PROVIDER, '  FaKe_AuRoRa  ')
+    monkeypatch.setenv(CONTINUITY_REASONING_PROVIDER, '  DeTeRmInIsTiC_OfFlInE  ')
     first = create_reasoning_provider()
     second = create_reasoning_provider()
-    assert isinstance(first, FakeAuroraProvider)
-    assert isinstance(second, FakeAuroraProvider)
+    assert isinstance(first, DeterministicOfflineReasoningProvider)
+    assert isinstance(second, DeterministicOfflineReasoningProvider)
     assert first is not second
 
 
@@ -808,10 +810,10 @@ def test_fake_selection_never_constructs_openai_provider_or_sdk(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError('OpenAI construction is forbidden for fake selection')
 
-    monkeypatch.setenv(selection.CONTINUITY_REASONING_PROVIDER, 'fake_aurora')
+    monkeypatch.setenv(selection.CONTINUITY_REASONING_PROVIDER, 'deterministic_offline')
     monkeypatch.setattr(selection, 'OpenAIReasoningProvider', forbidden)
     monkeypatch.setattr(openai, 'OpenAI', forbidden)
-    assert isinstance(selection.create_reasoning_provider(), FakeAuroraProvider)
+    assert isinstance(selection.create_reasoning_provider(), DeterministicOfflineReasoningProvider)
 
 
 def test_openai_provider_selection_is_normalized_and_constructed_once(monkeypatch):
@@ -1362,11 +1364,14 @@ def test_model_source_display_metadata_is_not_accepted(monkeypatch):
         run_analysis(records, 'q', provider)
 
 
-def test_project_aurora_remains_propagation_break(tmp_path: Path):
+def test_fixture_evidence_yields_explicit_gaps_without_semantic_inference(tmp_path: Path):
     records=aurora(tmp_path)
-    result, spans, snap=run_analysis(records,"q",FakeAuroraProvider())
-    assert result.analysis_status == "break_found"
-    assert result.continuity_break_kind == "propagation_break"
+    result, spans, snap=run_analysis(records,"q",DeterministicOfflineReasoningProvider())
+    assert result.analysis_status == "no_material_break_found"
+    assert result.continuity_break_kind is None
+    assert result.continuity_break is None
+    assert result.next_action is None
+    assert all(section.status == "evidence_gap" for section in result.project_report.sections)
 
 def test_decision_provenance_break_requires_two_records_and_no_approval():
     from continuity_ai.domain import ReasoningEvidence
@@ -1374,16 +1379,26 @@ def test_decision_provenance_break_requires_two_records_and_no_approval():
         ReasoningEvidence("EV-GEN-001","note","Alex","2026-01-01T00:00:00Z","Earlier scope","Feature Relay is included.","artifact"),
         ReasoningEvidence("EV-GEN-002","note","Blair","2026-01-02T00:00:00Z","Later scope","Feature Relay is removed.","artifact"),
     )
-    from continuity_ai.reasoning_pipeline import FakeDecisionProvenanceProvider
-    result, spans, snap=run_analysis(records,"what changed",FakeDecisionProvenanceProvider())
+    spans=build_spans(records)
+
+    def candidate():
+        payload=_generic_analysis()
+        payload["continuity_break_kind"]="decision_provenance_not_found"
+        for annotation in payload["semantic_annotations"]:
+            annotation["propagation_role"]="none"
+        payload["continuity_break"]["statement"]="Change with no decision found: We couldn’t find an approval, decision, or note for this change in the available project sources."
+        payload["next_action"]["statement"]="Add or link the decision that approved this change before treating the new value as current."
+        return payload
+
+    result=validate_analysis(candidate(),records,spans)
     assert result.continuity_break_kind == "decision_provenance_not_found"
     assert "couldn’t find an approval, decision, or note" in result.continuity_break.statement
     assert "There is no decision" not in result.continuity_break.statement
     assert "Add or link the decision" in result.next_action.statement
-    bad=FakeDecisionProvenanceProvider().analyze(records,spans,"q")
+    bad=candidate()
     bad["semantic_annotations"][0]["propagation_role"]="approved_decision"
     with pytest.raises(ValidationError): validate_analysis(bad,records,spans)
-    bad=FakeDecisionProvenanceProvider().analyze(records,spans,"q")
+    bad=candidate()
     bad["continuity_break"]["span_ids"]=[spans[0].span_id]
     with pytest.raises(ValidationError): validate_analysis(bad,records,spans)
 
@@ -1406,7 +1421,7 @@ def test_public_messages_are_human_and_bridge_does_not_leak_internal_names(tmp_p
         assert serialized["object_id"] is None
     assert ValidationError().to_dict()["code"] == "validation_error"
     assert VaultAlreadyExistsError().to_dict()["code"] == "vault_already_exists"
-    resp=Bridge(FakeAuroraProvider()).handle({"command":"unlock_vault","path":str(tmp_path/"missing"),"password":"wrong"})
+    resp=Bridge(DeterministicOfflineReasoningProvider()).handle({"command":"unlock_vault","path":str(tmp_path/"missing"),"password":"wrong"})
     body=json.dumps(resp, ensure_ascii=False)
     assert resp["ok"] is False
     assert set(resp["error"].keys()) == {"code", "message", "object_id"}
@@ -1421,16 +1436,7 @@ def test_public_messages_are_human_and_bridge_does_not_leak_internal_names(tmp_p
     assert "Traceback" not in body
 
 def test_no_break_requires_null_break_kind(tmp_path: Path):
-    records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
-    candidate["analysis_status"]="no_material_break_found"
-    candidate["continuity_break_kind"]=None
-    candidate["continuity_break"]=None
-    candidate["next_action"]=None
-    for ann in candidate["semantic_annotations"]:
-        ann["propagation_role"]="none"
-    for section in candidate["project_report"]["sections"]:
-        if section["status"] == "attention":
-            section["status"] = "confirmed"
+    records=aurora(tmp_path); spans=build_spans(records); candidate=DeterministicOfflineReasoningProvider().analyze(records,spans,"q")
     result=validate_analysis(candidate,records,spans)
     assert result.continuity_break_kind is None
     candidate["continuity_break_kind"]="propagation_break"

@@ -33,7 +33,7 @@ _CITATION_CARD_FIELDS = {
 class _BridgeProcess:
     """One persistent `bridge_main` child process, driven one NDJSON line at a time."""
 
-    def __init__(self, provider: str = "fake_aurora") -> None:
+    def __init__(self, provider: str = "deterministic_offline") -> None:
         env = os.environ.copy()
         env["CONTINUITY_REASONING_PROVIDER"] = provider
         self._proc = subprocess.Popen(
@@ -168,11 +168,11 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
             process_a.send({"command": "analyze_project", "question": question}),
             "analyze_project",
         )
-        assert analyze_data["analysis_status"] == "break_found"
-        assert analyze_data["continuity_break_kind"] == "propagation_break"
+        assert analyze_data["analysis_status"] == "no_material_break_found"
+        assert analyze_data["continuity_break_kind"] is None
         assert analyze_data["current_state"]["statement"].strip()
-        assert analyze_data["continuity_break"]["statement"].strip()
-        assert analyze_data["next_action"]["statement"].strip()
+        assert analyze_data["continuity_break"] is None
+        assert analyze_data["next_action"] is None
 
         project_report = analyze_data["project_report"]
         assert [s["key"] for s in project_report["sections"]] == [
@@ -180,13 +180,17 @@ def test_bridge_process_end_to_end_restart_and_source_change(tmp_path: Path) -> 
         ]
         assert project_report["summary"]["statement"].strip()
         assert project_report["summary"]["span_ids"]
-        assert any(s["status"] == "attention" for s in project_report["sections"])
+        assert all(s["status"] == "evidence_gap" for s in project_report["sections"])
 
         manifest = _read_manifest(artifact_root)
         all_evidence_ids = {entry["evidence_id"] for entry in manifest["artifacts"]}
         assert len(all_evidence_ids) == 5
         annotated_ids = {a["evidence_id"] for a in analyze_data["semantic_annotations"]}
         assert annotated_ids == all_evidence_ids
+        assert all(
+            annotation["propagation_role"] == "none"
+            for annotation in analyze_data["semantic_annotations"]
+        )
 
         cards_after_analysis = analyze_data["citation_cards"]
         assert cards_after_analysis

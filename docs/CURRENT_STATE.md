@@ -13,7 +13,7 @@
 - Production evidence contract (final, G-02): EvidenceRecord contains source_id, evidence_id, author, timestamp, source_type, title, uri, artifact_sha256, and content. It excludes timeline_position, business_purpose, semantic classifications, expected conclusions, and next actions. Chronology is UTC timestamp then evidence_id.
 - Accepted deferred G-02 finding: G02-NB-D1 — _pin_xlsx_modified_timestamp does not verify that exactly one dcterms:modified XML element was replaced. It is not on the MVP critical path.
 - Current repaired blockers: the real bridge vertical flow, the OpenAI reasoning-provider contract, and the implicit fake-provider fallback are repaired.
-- Production provider selection: CONTINUITY_REASONING_PROVIDER is required when no provider is injected. Production requires explicit provider selection. FakeAuroraProvider remains available only as an explicitly selected test/demo provider; it is not production reasoning.
+- Production provider selection: CONTINUITY_REASONING_PROVIDER is required when no provider is injected. Production requires explicit provider selection. DeterministicOfflineReasoningProvider remains available only as an explicitly selected test/offline-fallback provider; it performs no semantic inference and is not production reasoning or proof of real-model generalization.
 - Current operating boundary: the bridge, OpenAI adapter contract, and explicit provider selection operate against a pre-grouped candidate workspace. The system currently analyzes user-selected, already grouped project artifacts.
 - `docs/SEMANTIC_PROJECT_AND_DECISION_SCOPE_RESOLUTION_CONTRACT_v0.1.md` is accepted, falsified, frozen, and normative.
 - Semantic Project Resolution and Decision Scope Resolution are still not implemented. The system must not yet be described as resolving naturally inconsistent project references across scattered sources or deciding whether Mobile, Desktop, both variants, or global product-family scope applies.
@@ -80,11 +80,11 @@
   - provider output and failure modes fail safely before semantic validation by run_analysis;
   - URI, checksums, local paths, citation cards, and provider-owned display metadata are not sent to the model.
 - The implicit fake-provider fallback blocker is now repaired:
-  - provider selection is explicit, with openai and fake_aurora as the supported configured values;
+  - provider selection is explicit, with openai and deterministic_offline as the supported configured values;
   - missing, blank, and unsupported configuration fails safely when no provider is injected;
   - injected providers retain precedence, including falsy injected providers;
   - selection and module import do not call the network;
-  - FakeAuroraProvider is an explicitly selected test/demo provider only.
+  - DeterministicOfflineReasoningProvider is an explicitly selected test/demo provider only.
 - Operating boundary: the repaired bridge, OpenAI adapter contract, and explicit provider selection still operate against a user-selected, already grouped candidate workspace. Semantic Project Resolution and Decision Scope Resolution are not implemented.
 - Verification at the latest reviewed code checkpoint: focused stale-test regression 1 passed; targeted provider-selection suite 81 passed; full suite 131 passed; git diff --check passed; the normal non-force push completed; and the final working tree was clean.
 - Semantic project identity and decision scope have not been live-evaluated. No successful live GPT-5.6 semantic-resolution or continuity-analysis result may be claimed.
@@ -100,6 +100,24 @@
   - a packaged demo runner.
 - The semantic-resolution contract is frozen; its bounded implementation and any live evaluation remain pending.
 - Gate G-03 has not passed. PR #9 is not merge-ready. No merge decision has been made.
+
+## 2026-07-19 Generic Reasoning Fake Hardening
+
+- The fixture-named reasoning fake and selector were removed. The explicitly
+  selectable offline provider is now
+  `DeterministicOfflineReasoningProvider` via
+  `CONTINUITY_REASONING_PROVIDER=deterministic_offline`.
+- The provider has a neutral deterministic contract: evidence and citations are
+  sorted by identity, every semantic role is `none`, every Project Report
+  section is an explicit canonical `evidence_gap`, and no continuity break or
+  next action is inferred.
+- The offline provider accepts arbitrary project identities and evidence IDs.
+  Record order cannot assign or change semantic roles.
+- Empty, duplicated, incomplete, or foreign evidence/span ownership fails closed
+  with a provider error.
+- This provider exists only for tests and offline integration fallback. Its
+  schema-valid output does not demonstrate real-model generalization or establish
+  that no real continuity break exists.
 
 ## 2026-07-18 Read-Only Cursor Audit
 

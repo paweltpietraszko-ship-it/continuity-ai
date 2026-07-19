@@ -15,7 +15,7 @@ from continuity_ai.aurora_fixture import generate_project_aurora_fixture
 from continuity_ai.bridge import Bridge
 from continuity_ai.domain import ReasoningEvidence, SavedAnalysis
 from continuity_ai.evidence import build_spans, make_snapshot
-from continuity_ai.reasoning_pipeline import FakeAuroraProvider, SUPPORTED_SCHEMA_VERSION, validate_analysis
+from continuity_ai.reasoning_pipeline import DeterministicOfflineReasoningProvider, SUPPORTED_SCHEMA_VERSION, validate_analysis
 from continuity_ai.retained_analysis import (
     RETAINED_ANALYSIS_INVALID,
     RETAINED_ANALYSIS_NONE,
@@ -36,7 +36,7 @@ def _init_and_load(tmp_path: Path, provider=None):
     generate_project_aurora_fixture(tmp_path)
     artifact_root = str(tmp_path / "fixtures/project_aurora/generated/artifacts")
     vault_path = str(tmp_path / "vault.bin")
-    selected_provider = provider if provider is not None else FakeAuroraProvider()
+    selected_provider = provider if provider is not None else DeterministicOfflineReasoningProvider()
     bridge = Bridge(provider=selected_provider)
     bridge.handle({"command": "initialize_vault", "path": vault_path, "password": "secret", "owner_name": "Paweł"})
     bridge.handle({"command": "load_project", "artifact_root": artifact_root})
@@ -51,7 +51,7 @@ class _FailIfCalledProvider:
 
 # ---------------------------------------------------------------------------
 # Small explicit worlds for unit-level validator-parity contract examples.
-# Deliberately independent of FakeAuroraProvider's positional evidence ordering.
+# Deliberately independent of the offline provider's evidence-gap output.
 # ---------------------------------------------------------------------------
 
 def _propagation_world() -> tuple[tuple[ReasoningEvidence, ...], tuple]:
@@ -486,7 +486,7 @@ def test_initial_analysis_is_persisted_as_complete_retained_unit(tmp_path: Path)
     restored = saved_analysis_from_payload(raw)
     assert restored.result.analysis_status == bridge.analysis.analysis_status
     assert restored.question == "what changed overnight?"
-    assert restored.evidence_snapshot.provider_id == "fake-provider-v1"
+    assert restored.evidence_snapshot.provider_id == "deterministic-offline-v1"
 
 
 def test_restore_after_lock_and_unlock_in_same_bridge(tmp_path: Path):
@@ -573,7 +573,7 @@ def test_transactional_write_failure_preserves_previous_state(tmp_path: Path, mo
     assert bridge.last_question == before_question
 
     monkeypatch.setattr(vault_module, "_write", original_write)
-    reopened = Bridge(FakeAuroraProvider())
+    reopened = Bridge(DeterministicOfflineReasoningProvider())
     unlock_resp = reopened.handle({"command": "unlock_vault", "path": vault_path, "password": "secret"})
     assert unlock_resp["ok"] is True
     assert len(reopened.vault.payload["saved_analyses"]) == before_count
@@ -625,7 +625,7 @@ def test_cross_vault_leakage_prevented_even_with_equal_evidence(tmp_path: Path):
     setup.initialize("Owner B", "secret-b")
     setup.lock()
 
-    bridge = Bridge(provider=FakeAuroraProvider())
+    bridge = Bridge(provider=DeterministicOfflineReasoningProvider())
     bridge.handle({"command": "initialize_vault", "path": vault_a_path, "password": "secret-a", "owner_name": "Owner A"})
     bridge.handle({"command": "load_project", "artifact_root": artifact_root_a})
     assert bridge.handle({"command": "analyze_project", "question": "vault a question"})["ok"] is True
@@ -660,7 +660,7 @@ def test_analyze_project_response_contract_unchanged(tmp_path: Path):
         "continuity_break", "next_action", "project_report", "citation_cards",
         "analysis_id", "created_at", "prompt_version", "schema_version", "provider_id",
     }
-    assert data["analysis_status"] == "break_found"
+    assert data["analysis_status"] == "no_material_break_found"
     assert data["citation_cards"]
 
 

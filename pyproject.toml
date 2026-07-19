@@ -1,7 +1,7 @@
 [project]
 name = "continuity-ai"
 version = "0.1.0"
-description = "An evidence-grounded continuity layer for Project Aurora."
+description = "An evidence-grounded project continuity layer."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

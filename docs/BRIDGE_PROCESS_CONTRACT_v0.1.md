@@ -16,7 +16,7 @@ The parent process must set the reasoning provider explicitly via environment va
 - for deterministic local tests or development:
 
   ```text
-  CONTINUITY_REASONING_PROVIDER=fake_aurora
+  CONTINUITY_REASONING_PROVIDER=deterministic_offline
   ```
 
 - for a real provider run:
@@ -29,8 +29,13 @@ The parent process must set the reasoning provider explicitly via environment va
 
 Rules:
 
-- `CONTINUITY_REASONING_PROVIDER` missing, blank, or set to any value other than `openai` or `fake_aurora` causes the process to fail at startup (`Bridge()` construction raises before the read loop begins; `bridge_main.main()` returns exit code `1` with empty stdout and empty stderr).
-- `fake_aurora` is test/development infrastructure only. It must never be presented to the user as a live model run.
+- `CONTINUITY_REASONING_PROVIDER` missing, blank, or set to any value other than `openai` or `deterministic_offline` causes the process to fail at startup (`Bridge()` construction raises before the read loop begins; `bridge_main.main()` returns exit code `1` with empty stdout and empty stderr).
+- `deterministic_offline` is test/development and offline-fallback
+  infrastructure only. It performs no semantic inference and must never be
+  presented to the user as a live model run or as proof of model
+  generalization. It identity-orders evidence, emits only explicit
+  evidence-gap conclusions, and fails closed on incomplete or ambiguous
+  evidence/span ownership.
 - The parent process is responsible for setting `OPENAI_API_KEY` and `CONTINUITY_OPENAI_MODEL` when selecting `openai`; the Bridge process performs no other provider configuration.
 
 ## 2. Transport

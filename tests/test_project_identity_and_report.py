@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from continuity_ai.aurora_fixture import generate_project_aurora_fixture
 from continuity_ai.bridge import Bridge
-from continuity_ai.reasoning_pipeline import FakeAuroraProvider
+from continuity_ai.reasoning_pipeline import DeterministicOfflineReasoningProvider
 
 _ARTIFACT_ROOT = "fixtures/project_aurora/generated/artifacts"
 _EVIDENCE_RECORD_FIELDS = {
@@ -19,7 +19,7 @@ def _init_and_load(tmp_path: Path, provider=None):
     generate_project_aurora_fixture(tmp_path)
     artifact_root = str(tmp_path / _ARTIFACT_ROOT)
     vault_path = str(tmp_path / "vault.bin")
-    bridge = Bridge(provider=provider if provider is not None else FakeAuroraProvider())
+    bridge = Bridge(provider=provider if provider is not None else DeterministicOfflineReasoningProvider())
     bridge.handle({"command": "initialize_vault", "path": vault_path, "password": "secret", "owner_name": "Paweł"})
     bridge.handle({"command": "load_project", "artifact_root": artifact_root})
     return bridge, vault_path, artifact_root
@@ -126,7 +126,7 @@ def test_owner_display_name_available_when_unlocked_and_null_when_locked(tmp_pat
 
 def test_initialize_and_unlock_vault_return_owner_display_name(tmp_path: Path):
     vault_path = str(tmp_path / "vault.bin")
-    bridge = Bridge(provider=FakeAuroraProvider())
+    bridge = Bridge(provider=DeterministicOfflineReasoningProvider())
     init_resp = bridge.handle({
         "command": "initialize_vault", "path": vault_path, "password": "secret", "owner_name": "Zażółć",
     })
@@ -159,7 +159,7 @@ def test_citation_cards_include_project_report_spans_and_are_all_backend_known(t
 
 def test_owner_name_never_appears_in_the_plaintext_vault_envelope(tmp_path: Path):
     vault_path = tmp_path / "vault.bin"
-    bridge = Bridge(provider=FakeAuroraProvider())
+    bridge = Bridge(provider=DeterministicOfflineReasoningProvider())
     bridge.handle({
         "command": "initialize_vault", "path": str(vault_path), "password": "secret", "owner_name": "Zażółć Gęślą",
     })

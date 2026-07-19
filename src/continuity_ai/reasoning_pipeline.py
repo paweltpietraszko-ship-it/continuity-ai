@@ -1,4 +1,4 @@
-"""Reasoning provider protocol, fake provider, and validator."""
+"""Reasoning provider protocol, deterministic offline fake, and validator."""
 from __future__ import annotations
 from typing import Protocol, Any
 import uuid
@@ -6,7 +6,7 @@ from continuity_ai.domain import (
     AnalysisResult, GroundedStatement, PROJECT_REPORT_SECTION_NAMES, PROJECT_REPORT_STATUSES,
     ProjectReport, ProjectReportSection, SemanticAnnotation,
 )
-from continuity_ai.errors import ValidationError
+from continuity_ai.errors import ProviderError, ValidationError
 from continuity_ai.evidence import make_snapshot, build_spans
 
 class ReasoningProvider(Protocol):
@@ -24,71 +24,97 @@ def _evidence_gap_section(key: str) -> dict[str, Any]:
         "span_ids": [],
     }
 
-def _grounded_section(key: str, status: str, headline: str, detail: str, span_ids: list[str]) -> dict[str, Any]:
-    return {"key": key, "status": status, "headline": headline, "detail": detail, "span_ids": span_ids}
+class DeterministicOfflineReasoningProvider:
+    """Conservative fake for tests and offline fallback only.
 
-class FakeAuroraProvider:
-    provider_id = "fake-provider-v1"
+    This provider deliberately performs no semantic reasoning. It produces the
+    schema's evidence-gap representation from identity-ordered evidence and fails
+    closed when evidence/span ownership is incomplete or ambiguous. Its output is
+    useful for exercising integration paths; it is not evidence that a real model
+    generalizes to unseen projects. Schema 3.0 has no top-level evidence-gap
+    status, so `no_material_break_found` is used only as the validator-compatible
+    envelope for the explicit section gaps, not as a semantic no-break finding.
+    """
+
+    provider_id = "deterministic-offline-v1"
+
     def analyze(self, evidence, spans, question):
-        by_ev = {e.evidence_id: [] for e in evidence}
-        for s in spans:
-            by_ev[s.evidence_id].append(s.span_id)
-        ids = [e.evidence_id for e in evidence]
-        anns = []
-        for i, eid in enumerate(ids):
-            role = ["approved_decision", "conflicts_with_decision", "reflects_decision", "conflicts_with_decision", "none"][i] if i < 5 else "none"
-            tags = ["urgency"] if i == 4 else []
-            anns.append({"evidence_id": eid, "propagation_role": role, "context_tags": tags})
+        if (
+            not isinstance(evidence, (list, tuple))
+            or not isinstance(spans, (list, tuple))
+            or not isinstance(question, str)
+            or not question.strip()
+        ):
+            raise ProviderError()
+
+        evidence_by_id = {}
+        for record in evidence:
+            evidence_id = getattr(record, "evidence_id", None)
+            if (
+                not isinstance(evidence_id, str)
+                or not evidence_id.strip()
+                or evidence_id in evidence_by_id
+            ):
+                raise ProviderError()
+            evidence_by_id[evidence_id] = record
+        if not evidence_by_id:
+            raise ProviderError()
+
+        spans_by_evidence = {evidence_id: [] for evidence_id in evidence_by_id}
+        seen_span_ids = set()
+        for span in spans:
+            span_id = getattr(span, "span_id", None)
+            evidence_id = getattr(span, "evidence_id", None)
+            if (
+                not isinstance(span_id, str)
+                or not span_id.strip()
+                or span_id in seen_span_ids
+                or evidence_id not in evidence_by_id
+            ):
+                raise ProviderError()
+            seen_span_ids.add(span_id)
+            spans_by_evidence[evidence_id].append(span_id)
+
+        if any(not owned_spans for owned_spans in spans_by_evidence.values()):
+            raise ProviderError()
+
+        evidence_ids = sorted(evidence_by_id)
+        grounded_span_ids = [
+            min(spans_by_evidence[evidence_id]) for evidence_id in evidence_ids
+        ]
+        annotations = [
+            {
+                "evidence_id": evidence_id,
+                "propagation_role": "none",
+                "context_tags": [],
+            }
+            for evidence_id in evidence_ids
+        ]
         sections = [
-            _grounded_section("decision", "confirmed", "Location change approved", "An approved decision authorizes the location change.", [by_ev[ids[0]][0]]),
-            _evidence_gap_section("budget"),
-            _grounded_section("schedule", "attention", "Operational sources not yet aligned", "The approved change has not reached every operational schedule source.", [by_ev[ids[0]][0], by_ev[ids[1]][0]]),
-            _evidence_gap_section("operations"),
-            _grounded_section("readiness", "not_applicable", "Not evaluated", "Readiness is not evaluated by this analysis.", [by_ev[ids[2]][0]]),
-            _evidence_gap_section("casting"),
-            _evidence_gap_section("agreements"),
+            _evidence_gap_section(key) for key in PROJECT_REPORT_SECTION_NAMES
         ]
         return {
             "schema_version": "3.0",
-            "analysis_status": "break_found",
-            "continuity_break_kind": "propagation_break",
-            "current_state": {"statement": "The project sources show an approved change that has not reached every operational artifact.", "span_ids": [by_ev[ids[0]][0], by_ev[ids[1]][0]]},
-            "semantic_annotations": anns,
-            "continuity_break": {"statement": "An approved decision is reflected by some project sources but contradicted by current operational sources.", "span_ids": [by_ev[ids[0]][0], by_ev[ids[1]][0], by_ev[ids[2]][0], by_ev[ids[3]][0]]},
-            "next_action": {"statement": "Update the affected operational sources before the time-sensitive briefing.", "span_ids": [by_ev[ids[3]][0], by_ev[ids[4]][0]]},
-            "project_report": {
-                "summary": {"statement": "Project Aurora shows an approved change that has not fully propagated to operational sources.", "span_ids": [by_ev[ids[0]][0]]},
-                "sections": sections,
+            "analysis_status": "no_material_break_found",
+            "continuity_break_kind": None,
+            "current_state": {
+                "statement": (
+                    "The available evidence cannot establish a semantic project "
+                    "state through the deterministic offline provider."
+                ),
+                "span_ids": grounded_span_ids,
             },
-        }
-
-class FakeDecisionProvenanceProvider:
-    provider_id = "fake-decision-provenance-v1"
-    def analyze(self, evidence, spans, question):
-        ids = [e.evidence_id for e in evidence]
-        by_ev = {e.evidence_id: [] for e in evidence}
-        for s in spans:
-            by_ev[s.evidence_id].append(s.span_id)
-        break_spans = [by_ev[ids[0]][0], by_ev[ids[1]][0]]
-        sections = [
-            _grounded_section("decision", "attention", "No decision provenance found", "No supplied approval, decision, or note establishes who approved this change.", break_spans),
-            _evidence_gap_section("budget"),
-            _evidence_gap_section("schedule"),
-            _evidence_gap_section("operations"),
-            _evidence_gap_section("readiness"),
-            _evidence_gap_section("casting"),
-            _evidence_gap_section("agreements"),
-        ]
-        return {
-            "schema_version": "3.0",
-            "analysis_status": "break_found",
-            "continuity_break_kind": "decision_provenance_not_found",
-            "current_state": {"statement": "A project item changed between available sources, and no approving source was found in the available project sources.", "span_ids": [by_ev[ids[0]][0], by_ev[ids[1]][0]]},
-            "semantic_annotations": [{"evidence_id": eid, "propagation_role": "none", "context_tags": []} for eid in ids],
-            "continuity_break": {"statement": "Change with no decision found: The feature changed from present to absent. We couldn’t find an approval, decision, or note for this change in the project sources currently available to Continuity AI.", "span_ids": break_spans},
-            "next_action": {"statement": "Add or link the decision that approved this change before treating the new value as current.", "span_ids": [by_ev[ids[0]][0], by_ev[ids[1]][0]]},
+            "semantic_annotations": annotations,
+            "continuity_break": None,
+            "next_action": None,
             "project_report": {
-                "summary": {"statement": "A material change appears with no recorded decision provenance.", "span_ids": break_spans},
+                "summary": {
+                    "statement": (
+                        "No semantic conclusion is asserted; every report section "
+                        "remains an explicit evidence gap."
+                    ),
+                    "span_ids": grounded_span_ids,
+                },
                 "sections": sections,
             },
         }

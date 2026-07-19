@@ -1,4 +1,4 @@
-"""Shared typed models for deterministic Project Aurora artifacts."""
+"""Shared typed models for deterministic artifacts."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ArtifactDefinition:
-    """Fixed definition for one synthetic Project Aurora artifact."""
+    """Fixed definition for one synthetic artifact."""
 
     source_id: str
     evidence_id: str

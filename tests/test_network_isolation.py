@@ -6,7 +6,7 @@ import pytest
 
 from continuity_ai.bridge import Bridge
 from continuity_ai.openai_provider import OpenAIReasoningProvider
-from continuity_ai.reasoning_pipeline import FakeAuroraProvider
+from continuity_ai.reasoning_pipeline import DeterministicOfflineReasoningProvider
 
 
 LOOPBACK_CLOSED_PORT = ("127.0.0.1", 9)
@@ -38,5 +38,5 @@ def test_explicit_openai_provider_does_not_bypass_default_socket_guard(
     bridge = Bridge()
 
     assert isinstance(bridge.provider, OpenAIReasoningProvider)
-    assert not isinstance(bridge.provider, FakeAuroraProvider)
+    assert not isinstance(bridge.provider, DeterministicOfflineReasoningProvider)
     _assert_default_socket_guard_blocks_connection()

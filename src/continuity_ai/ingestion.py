@@ -1,4 +1,4 @@
-"""Deterministic ingestion and normalization of Project Aurora production artifacts.
+"""Deterministic ingestion and normalization of production artifacts.
 
 This module converts the production artifact directory into typed, normalized
 evidence records. It performs no AI reasoning, contradiction detection,
@@ -54,7 +54,7 @@ _FORBIDDEN_FILENAME = "ground_truth.json"
 
 
 class ArtifactIngestionError(RuntimeError):
-    """Raised when Project Aurora artifact ingestion cannot proceed safely."""
+    """Raised when artifact ingestion cannot proceed safely."""
 
 
 def ingest_artifacts(artifact_root: Path) -> tuple[EvidenceRecord, ...]:
