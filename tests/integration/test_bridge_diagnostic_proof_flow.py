@@ -145,6 +145,54 @@ def _prepare_and_script(bridge: Bridge, tmp_path: Path, monkeypatch: pytest.Monk
     return runner
 
 
+def _prepare_and_script_with_confident_override(
+    bridge: Bridge,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    original_status: str,
+) -> tuple[str, str, str]:
+    """Like `_prepare_and_script`, but also picks one non-ambiguous evidence
+    id with the given automatic Codex status and pre-scripts the reporting
+    response to reflect the human's planned correction of it -- the test
+    itself controls the oracle deterministically, so the correct final
+    report contents are already knowable before `diagnostic_run_scoping`
+    ever runs, exactly as a real Codex CLI would be asked to report on
+    whatever the approved-only workspace actually contains."""
+    prepared = bridge.handle({"command": "diagnostic_prepare_workspace"})
+    assert prepared["ok"] is True
+    workspace = bridge._diagnostic.workspace
+    assert workspace is not None
+
+    scripted_evaluation_root = tmp_path / "scripted-evaluation"
+    generated = generate_unseen_workspace(scripted_evaluation_root, workspace.seed)
+    generated_input_root = Path(str(generated["input_root"])).resolve(strict=True)
+    oracle_root = Path(str(generated["oracle_root"])).resolve(strict=True)
+
+    statuses = _oracle_statuses(oracle_root)
+    flipped_evidence_id = next(
+        evidence_id for evidence_id, status in statuses.items() if status == original_status
+    )
+    new_status = "included" if original_status == "exclude" else "excluded"
+
+    final_included_ids = {
+        evidence_id
+        for evidence_id, status in statuses.items()
+        if (status == "include" and evidence_id != flipped_evidence_id)
+        or (evidence_id == flipped_evidence_id and new_status == "included")
+    }
+    path_by_id = {record.evidence_id: record.relative_path for record in load_workspace(generated_input_root).records}
+    final_report_paths = sorted(path_by_id[evidence_id] for evidence_id in final_included_ids)
+
+    responses = [
+        _classification_payload(generated_input_root, oracle_root),
+        json.dumps({"relative_paths": final_report_paths}),
+    ]
+    runner = ScriptedRunner(responses)
+    _patch_local_codex(monkeypatch, runner)
+    return flipped_evidence_id, new_status, path_by_id[flipped_evidence_id]
+
+
 def _run_full_flow(bridge: Bridge, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     _prepare_and_script(bridge, tmp_path, monkeypatch)
 
@@ -331,3 +379,183 @@ def test_human_review_happens_on_a_genuinely_separate_command(
     overrides = {d["evidence_id"]: ("included" if d["association_status"] == "included" else "excluded") for d in decisions}
     bridge.handle({"command": "diagnostic_confirm_scope", "overrides": overrides})
     assert bridge._diagnostic.completed is not None
+
+
+def _confirm_with_one_confident_override(
+    bridge: Bridge, flipped_evidence_id: str, new_status: str
+) -> dict[str, Any]:
+    scoping_resp = bridge.handle({"command": "diagnostic_run_scoping"})
+    assert scoping_resp["ok"] is True, scoping_resp.get("error")
+    decisions = scoping_resp["data"]["decisions"]
+    overrides: dict[str, str] = {}
+    for decision in decisions:
+        evidence_id = decision["evidence_id"]
+        if evidence_id == flipped_evidence_id:
+            overrides[evidence_id] = new_status
+        elif decision["association_status"] == "ambiguous":
+            overrides[evidence_id] = "excluded"
+        else:
+            overrides[evidence_id] = decision["association_status"]
+
+    confirm_resp = bridge.handle({"command": "diagnostic_confirm_scope", "overrides": overrides})
+    assert confirm_resp["ok"] is True, confirm_resp.get("error")
+    return confirm_resp["data"]
+
+
+def test_confident_included_to_excluded_override_physically_removes_the_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A human correcting a confident Codex 'included' decision to
+    'excluded' must physically remove that source from the approved-only
+    workspace, must be reflected in what reporting actually sees, and must
+    be allowed to make the proof honestly FAIL -- the correction is real,
+    not decorative."""
+    bridge = Bridge(provider=_UnusedReasoningProvider())
+    flipped_evidence_id, new_status, relative_path = _prepare_and_script_with_confident_override(
+        bridge, tmp_path, monkeypatch, original_status="include"
+    )
+    assert new_status == "excluded"
+
+    data = _confirm_with_one_confident_override(bridge, flipped_evidence_id, new_status)
+
+    completed = bridge._diagnostic.completed
+    assert completed is not None
+    assert flipped_evidence_id in completed.excluded_evidence_ids
+    assert flipped_evidence_id not in completed.approved_evidence_ids
+
+    approved_root = completed.approved_workspace_root
+    removed_path = approved_root.joinpath(*relative_path.split("/"))
+    assert not removed_path.exists()
+    assert relative_path not in completed.reported_relative_paths
+
+    assert data["result"] == "FAIL"
+    claims = {claim["name"]: claim["status"] for claim in data["claims"]}
+    assert claims["PROJECT_REPORT_PATHS_MATCH_APPROVED_SCOPE"] == "PASS"
+
+
+def test_confident_excluded_to_included_override_physically_adds_the_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A human correcting a confident Codex 'excluded' decision to
+    'included' must physically add that source to the approved-only
+    workspace and must be reflected in what reporting actually sees."""
+    bridge = Bridge(provider=_UnusedReasoningProvider())
+    flipped_evidence_id, new_status, relative_path = _prepare_and_script_with_confident_override(
+        bridge, tmp_path, monkeypatch, original_status="exclude"
+    )
+    assert new_status == "included"
+
+    data = _confirm_with_one_confident_override(bridge, flipped_evidence_id, new_status)
+
+    completed = bridge._diagnostic.completed
+    assert completed is not None
+    assert flipped_evidence_id in completed.approved_evidence_ids
+    assert flipped_evidence_id not in completed.excluded_evidence_ids
+
+    approved_root = completed.approved_workspace_root
+    added_path = approved_root.joinpath(*relative_path.split("/"))
+    assert added_path.is_file()
+    assert relative_path in completed.reported_relative_paths
+
+    assert data["result"] == "FAIL"
+    claims = {claim["name"]: claim["status"] for claim in data["claims"]}
+    assert claims["PROJECT_REPORT_PATHS_MATCH_APPROVED_SCOPE"] == "PASS"
+
+
+def test_agreeing_review_with_no_confident_corrections_still_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirms the fix does not regress the ordinary case: a human who
+    clicks in agreement with every confident decision (and only resolves
+    ambiguous ones) still produces a clean PASS, exactly as before."""
+    bridge = Bridge(provider=_UnusedReasoningProvider())
+    data = _run_full_flow(bridge, tmp_path, monkeypatch)
+    assert data["result"] == "PASS"
+
+
+def test_same_codex_session_id_claim_never_exposes_the_full_session_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = Bridge(provider=_UnusedReasoningProvider())
+    data = _run_full_flow(bridge, tmp_path, monkeypatch)
+
+    claims_by_name = {claim["name"]: claim for claim in data["claims"]}
+    same_session_claim = claims_by_name["SAME_CODEX_SESSION_ID"]
+    assert same_session_claim["status"] == "PASS"
+    assert THREAD_ID not in same_session_claim["observed"]
+    assert same_session_claim["observed"] == "same retained session"
+
+    body = json.dumps(data, ensure_ascii=False)
+    # The dedicated summary field is allowed to carry the full id (the
+    # desktop layer truncates it for display, matching RunIdentity
+    # elsewhere); no *claim* observed/expected value may ever contain it.
+    for claim in data["claims"]:
+        assert THREAD_ID not in claim["observed"]
+
+
+def test_scoping_rejection_preserves_the_prepared_workspace_for_an_explicit_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First diagnostic_run_scoping call gets a controlled semantic
+    rejection from Codex; the prepared oracle-free workspace and its
+    fingerprint must survive unchanged, phase must fall back to
+    workspace_ready (not idle), a second explicit call must succeed with the
+    exact same workspace, no fallback provider is ever consulted, and the
+    oracle stays absent for both attempts."""
+    import continuity_ai.deterministic_offline_provider as offline_module
+    import continuity_ai.openai_provider as provider_module
+
+    fallback_calls: list[str] = []
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        fallback_calls.append("fallback")
+        raise AssertionError("provider fallback invoked")
+
+    monkeypatch.setattr(provider_module, "OpenAIReasoningProvider", forbidden)
+    monkeypatch.setattr(offline_module, "DeterministicOfflineReasoningProvider", forbidden)
+
+    bridge = Bridge(provider=_UnusedReasoningProvider())
+    prepared = bridge.handle({"command": "diagnostic_prepare_workspace"})
+    assert prepared["ok"] is True
+    workspace_before = bridge._diagnostic.workspace
+    fingerprint_before = workspace_before.generated_input_fingerprint
+    run_root_before = workspace_before.run_root
+
+    scripted_evaluation_root = tmp_path / "scripted-evaluation"
+    generated = generate_unseen_workspace(scripted_evaluation_root, workspace_before.seed)
+    generated_input_root = Path(str(generated["input_root"])).resolve(strict=True)
+    oracle_root = Path(str(generated["oracle_root"])).resolve(strict=True)
+
+    def _oracle_absent(root: Path) -> bool:
+        return not any(
+            path.name.casefold() in {"oracle", "expected_scope.json"} for path in root.rglob("*")
+        )
+
+    assert _oracle_absent(run_root_before)
+
+    responses = [
+        json.dumps({"not": "the expected source scoping shape"}),
+        _classification_payload(generated_input_root, oracle_root),
+        json.dumps({"relative_paths": _approved_paths(generated_input_root, oracle_root)}),
+    ]
+    runner = ScriptedRunner(responses)
+    _patch_local_codex(monkeypatch, runner)
+
+    first_attempt = bridge.handle({"command": "diagnostic_run_scoping"})
+    assert first_attempt["ok"] is False
+    assert first_attempt["error"]["code"] == "provider_error"
+    assert fallback_calls == []
+    assert bridge._diagnostic.phase == "workspace_ready"
+    assert bridge._diagnostic.workspace is workspace_before
+    assert bridge._diagnostic.workspace.generated_input_fingerprint == fingerprint_before
+    assert bridge._diagnostic.controller is None
+    assert bridge._diagnostic._run is None
+    assert _oracle_absent(run_root_before)
+
+    second_attempt = bridge.handle({"command": "diagnostic_run_scoping"})
+    assert second_attempt["ok"] is True, second_attempt.get("error")
+    assert bridge._diagnostic.phase == "awaiting_review"
+    assert bridge._diagnostic.workspace.generated_input_fingerprint == fingerprint_before
+    assert fallback_calls == []
+    assert _oracle_absent(run_root_before)
+    assert len(runner.calls) == 2

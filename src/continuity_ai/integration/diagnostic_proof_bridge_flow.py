@@ -45,6 +45,7 @@ from continuity_ai.diagnostic_proof import (
 )
 from continuity_ai.errors import ProviderError, ValidationError
 from continuity_ai.source_scoping.domain import SourceScopingResult
+from continuity_ai.unseen_workspace.models import ProofStatus
 
 CONTROLLER_STORE_FILENAME = ".continuity_diagnostic_sessions.json"
 
@@ -172,11 +173,11 @@ def start_diagnostic_scoping(state: DiagnosticFlowState) -> dict[str, Any]:
     try:
         kind, payload = run.to_ui.get(timeout=_CODEX_TIMEOUT_SECONDS + 30)
     except queue.Empty:
-        state.reset()
+        _discard_failed_scoping_attempt(state)
         raise ProviderError()
 
     if kind != "review":
-        state.reset()
+        _discard_failed_scoping_attempt(state)
         raise ProviderError()
 
     scoping_result = payload
@@ -184,6 +185,20 @@ def start_diagnostic_scoping(state: DiagnosticFlowState) -> dict[str, Any]:
     state.scoping_result = scoping_result
     state.phase = "awaiting_review"
     return _render_decisions(scoping_result)
+
+
+def _discard_failed_scoping_attempt(state: DiagnosticFlowState) -> None:
+    """A semantic/provider rejection during `diagnostic_run_scoping` (a real,
+    honest Codex failure -- flaky real-model output, not a bug) discards only
+    the failed controller/thread. The already-prepared, oracle-free workspace
+    is deliberately kept exactly as-is (same fingerprint, same standalone
+    input) so the user can explicitly click "Run real Codex Source Scoping
+    investigation" again -- a genuine new real Codex call, never a hidden
+    retry loop or a fallback to any local/OpenAI/deterministic provider."""
+    state.controller = None
+    state._run = None
+    state.scoping_result = None
+    state.phase = "workspace_ready"
 
 
 def confirm_diagnostic_scope(
@@ -214,23 +229,22 @@ def confirm_diagnostic_scope(
         raise ValidationError()
 
     # Every source above required an explicit human click -- nothing was
-    # pre-approved. The frozen core's own oracle evaluator (unseen_workspace
-    # proof_claims/evaluator, not part of this Diagnostic Proof Core import
-    # and not rewritten here) structurally only accepts a human override for
-    # a record Codex itself deferred as ambiguous: forwarding a decision for
-    # an already-decided record as an "override" makes that claim -- and so
-    # the whole proof -- FAIL, even when the human's choice simply agrees
-    # with Codex. So only the ambiguous resolutions cross into the engine's
-    # review callback; the human's confirmation of every other decision is
-    # still required above, just never submitted as an "override" the core
-    # was never designed to accept one for.
-    ambiguous_ids = {
-        decision.evidence_id
-        for decision in state.scoping_result.decisions
-        if decision.association_status == "ambiguous"
-    }
+    # pre-approved. A click that simply agrees with Codex's own confident
+    # (non-ambiguous) classification is a confirmation, not a correction,
+    # and is not submitted as an "override" the engine never asked to
+    # resolve. But a click that genuinely disagrees with a confident
+    # classification is a real human correction and MUST reach the engine:
+    # it has to physically move that source in or out of the approved-only
+    # workspace, and the diagnostic proof must be free to honestly FAIL when
+    # a human overrides a confident decision, exactly like it can already
+    # fail on any other integrity claim. Silently dropping a disagreeing
+    # click here would make human review decorative.
+    decisions_by_id = {decision.evidence_id: decision for decision in state.scoping_result.decisions}
     engine_overrides = {
-        evidence_id: value for evidence_id, value in submitted.items() if evidence_id in ambiguous_ids
+        evidence_id: value
+        for evidence_id, value in submitted.items()
+        if decisions_by_id[evidence_id].association_status == "ambiguous"
+        or value != decisions_by_id[evidence_id].association_status
     }
 
     run = state._run
@@ -308,14 +322,22 @@ def _render_report(report: DiagnosticProofReport) -> dict[str, Any]:
     return {
         "result": report.result.value,
         "codex_session_id": report.codex_session_id,
-        "claims": [
-            {
-                "name": claim.name,
-                "status": claim.status.value,
-                "observed": (
-                    "[redacted]" if claim.name in _REDACTED_CLAIM_OBSERVED else claim.observed
-                ),
-            }
-            for claim in report.claims
-        ],
+        "claims": [_render_claim(claim) for claim in report.claims],
     }
+
+
+def _render_claim(claim: Any) -> dict[str, Any]:
+    # SAME_CODEX_SESSION_ID's own `observed`/`expected` are full Codex
+    # session UUIDs (see unseen_workspace/proof_claims.py and
+    # diagnostic_proof/evaluator.py's `_diagnostic_claims`, neither rewritten
+    # here): a full session id must never reach the screen, not even inside
+    # a claims table. The claim's own PASS/FAIL status already proves the
+    # "same session" fact; a neutral phrase communicates it without exposing
+    # the id.
+    if claim.name == "SAME_CODEX_SESSION_ID":
+        observed = "same retained session" if claim.status is ProofStatus.PASS else "different session (not shown)"
+    elif claim.name in _REDACTED_CLAIM_OBSERVED:
+        observed = "[redacted]"
+    else:
+        observed = claim.observed
+    return {"name": claim.name, "status": claim.status.value, "observed": observed}

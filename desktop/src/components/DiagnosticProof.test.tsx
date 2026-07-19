@@ -27,19 +27,23 @@ const DECISIONS = [
   },
 ];
 
+const FULL_CODEX_SESSION_ID = "12345678-aaaa-bbbb-cccc-1234567890ab";
+
 const PASS_REPORT = {
   result: "PASS" as const,
-  codex_session_id: "12345678-aaaa-bbbb-cccc-1234567890ab",
+  codex_session_id: FULL_CODEX_SESSION_ID,
   claims: [
     { name: "ORACLE_ABSENT_DURING_ENGINE_EXECUTION", status: "PASS" as const, observed: "true" },
-    { name: "SAME_CODEX_SESSION_ID", status: "PASS" as const, observed: "12345678-aaaa-bbbb-cccc-1234567890ab" },
+    // Bridge itself never sends the raw id for this claim -- only a neutral
+    // phrase (see diagnostic_proof_bridge_flow.py's `_render_claim`).
+    { name: "SAME_CODEX_SESSION_ID", status: "PASS" as const, observed: "same retained session" },
     { name: "UNSEEN_SEED_RECORDED", status: "PASS" as const, observed: "[redacted]" },
   ],
 };
 
 const FAIL_REPORT = {
   result: "FAIL" as const,
-  codex_session_id: "12345678-aaaa-bbbb-cccc-1234567890ab",
+  codex_session_id: FULL_CODEX_SESSION_ID,
   claims: [
     { name: "APPROVED_WORKSPACE_FINGERPRINT_MATCH", status: "FAIL" as const, observed: "false" },
     { name: "ORACLE_ABSENT_DURING_ENGINE_EXECUTION", status: "PASS" as const, observed: "true" },
@@ -130,18 +134,68 @@ describe("DiagnosticProof", () => {
     expect(screen.getByText("SAME_CODEX_SESSION_ID")).toBeInTheDocument();
     // The prominent "Codex session" summary field always shows the
     // truncated form, matching the RunIdentity convention used elsewhere in
-    // this app; the claims table below it separately shows full evidence,
-    // including the raw session id, as part of "observed" claim content.
+    // this app.
     const summary = screen.getByText("Codex session").closest("div");
     expect(summary).not.toBeNull();
-    expect(summary).not.toHaveTextContent(PASS_REPORT.codex_session_id);
+    expect(summary).not.toHaveTextContent(FULL_CODEX_SESSION_ID);
     expect(summary).toHaveTextContent("12345678…");
+    // The full id must not appear anywhere on screen, including in the
+    // claims table's SAME_CODEX_SESSION_ID row -- Bridge itself never sends
+    // it for that claim (see PASS_REPORT above), so this also guards
+    // against a future regression reintroducing it client-side.
+    expect(document.body.textContent ?? "").not.toContain(FULL_CODEX_SESSION_ID);
 
     expect(requestSpy.mock.calls.map(([command]) => command.command)).toEqual([
       "diagnostic_prepare_workspace",
       "diagnostic_run_scoping",
       "diagnostic_confirm_scope",
     ]);
+  });
+
+  it("clearly labels a scoping retry after a failed real Codex call as a brand-new real call, never a silent fallback", async () => {
+    vi.spyOn(desktopBridge, "start").mockResolvedValue({ running: true, process_id: 1 });
+    let scopingCalls = 0;
+    vi.spyOn(desktopBridge, "request").mockImplementation(
+      async <TCommand extends BridgeCommand>(
+        command: TCommand,
+      ): Promise<BridgeCommandResultMap[TCommand["command"]]> => {
+        if (command.command === "diagnostic_prepare_workspace") {
+          return { phase: "workspace_ready", input_fingerprint_prefix: "abcdef123456" } as BridgeCommandResultMap[TCommand["command"]];
+        }
+        if (command.command === "diagnostic_run_scoping") {
+          scopingCalls += 1;
+          if (scopingCalls === 1) {
+            throw new Error("Continuity AI couldn't complete this request safely. Nothing was changed.");
+          }
+          return {
+            phase: "awaiting_review",
+            target_project: "Project Test Fixture",
+            decisions: DECISIONS,
+          } as unknown as BridgeCommandResultMap[TCommand["command"]];
+        }
+        throw new Error(`Unexpected command in test: ${command.command}`);
+      },
+    );
+
+    render(<DiagnosticProof onBack={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Prepare a fresh synthetic unseen workspace" }));
+    const scopingButton = await screen.findByRole("button", { name: "Run real Codex Source Scoping investigation" });
+
+    expect(screen.queryByText(/brand-new real call to/)).not.toBeInTheDocument();
+    await user.click(scopingButton);
+
+    // The failed first attempt leaves the same button usable again, with an
+    // explicit note that the next click is a fresh real Codex call.
+    const retryNote = await screen.findByText(/brand-new real call to/);
+    expect(retryNote).toHaveTextContent("attempt 2");
+    expect(retryNote).toHaveTextContent("never retried automatically");
+    expect(screen.getByRole("button", { name: "Run real Codex Source Scoping investigation" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Run real Codex Source Scoping investigation" }));
+    expect(await screen.findByText("EV-1")).toBeInTheDocument();
+    expect(scopingCalls).toBe(2);
   });
 
   it("only enables the controlled tamper check after a completed result, and shows its expected FAIL separately", async () => {

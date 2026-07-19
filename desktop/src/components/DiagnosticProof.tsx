@@ -41,6 +41,7 @@ export function DiagnosticProof({ onBack }: DiagnosticProofProps) {
   const [overrides, setOverrides] = useState<Readonly<Record<string, SourceFinalStatus>>>({});
   const [report, setReport] = useState<DiagnosticReportView | null>(null);
   const [tamperReport, setTamperReport] = useState<DiagnosticReportView | null>(null);
+  const [scopingAttempts, setScopingAttempts] = useState(0);
 
   const runtimeAvailable = isTauriRuntime();
 
@@ -66,10 +67,16 @@ export function DiagnosticProof({ onBack }: DiagnosticProofProps) {
       setOverrides({});
       setReport(null);
       setTamperReport(null);
+      setScopingAttempts(0);
     });
   }
 
   async function runScoping(): Promise<void> {
+    // Every click here is a genuine new real Codex call -- there is no
+    // hidden retry loop and no fallback provider. A failed attempt (a real,
+    // honest Codex rejection) leaves the prepared workspace untouched and
+    // simply re-enables this same button for another explicit real call.
+    setScopingAttempts((count) => count + 1);
     await run(async () => {
       const data = await continuitySession.runDiagnosticScoping();
       setPhase(data.phase);
@@ -170,6 +177,13 @@ export function DiagnosticProof({ onBack }: DiagnosticProofProps) {
         {phase !== "idle" ? (
           <section className="finding-rail-section live-project-panel">
             <h3>2. Real Codex Source Scoping</h3>
+            {scopingAttempts > 0 && phase === "workspace_ready" ? (
+              <p className="locked-note" role="status">
+                {error ? "The previous real Codex call failed. " : ""}Clicking below makes a brand-new real call to
+                Codex on the exact same prepared workspace — attempt {scopingAttempts + 1}. This is never retried
+                automatically and nothing here falls back to a local or cached result.
+              </p>
+            ) : null}
             <button
               className="primary-button"
               type="button"
