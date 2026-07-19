@@ -58,7 +58,7 @@ def evaluate_generated_run(
     all_references = _all_evidence_references(classification_result)
     invalid_references = tuple(sorted({item for item in all_references if item not in expected_ids}))
     valid_reference_count = sum(item in expected_ids for item in all_references)
-    citation_validity = not invalid_references
+    evidence_reference_validity = not invalid_references
 
     unsafe_inclusions = tuple(
         sorted(
@@ -100,7 +100,7 @@ def evaluate_generated_run(
     )
     approved_set = set(submitted_scope)
     project_report_ids = tuple(sorted(classification_result.project_report_evidence_ids))
-    excluded_reaching_report = tuple(
+    declared_report_references_outside_scope = tuple(
         sorted({evidence_id for evidence_id in project_report_ids if evidence_id not in approved_set})
     )
     exact_status_matches = sum(
@@ -115,7 +115,7 @@ def evaluate_generated_run(
         exact_partition=exact_partition,
         classified_once=classified_once,
         total_records=len(expected_ids),
-        citation_validity=citation_validity,
+        evidence_reference_validity=evidence_reference_validity,
         invalid_references=invalid_references,
         unsafe_inclusions=unsafe_inclusions,
         ambiguous_deferred=ambiguous_deferred,
@@ -124,7 +124,9 @@ def evaluate_generated_run(
         override_count=len(classification_result.human_overrides),
         approved_scope_integrity=approved_scope_integrity,
         approved_scope_size=len(approved_set),
-        excluded_reaching_report=excluded_reaching_report,
+        declared_report_references_outside_scope=(
+            declared_report_references_outside_scope
+        ),
         exposure_status=exposure_status,
         exact_status_matches=exact_status_matches,
     )
@@ -143,7 +145,7 @@ def evaluate_generated_run(
         exact_partition_integrity=exact_partition,
         valid_evidence_references=valid_reference_count,
         total_evidence_references=len(all_references),
-        citation_validity=citation_validity,
+        evidence_reference_validity=evidence_reference_validity,
         invalid_evidence_references=invalid_references,
         unsafe_automatic_inclusions=unsafe_inclusions,
         ambiguous_records_deferred_to_human_review=ambiguous_deferred,
@@ -155,7 +157,9 @@ def evaluate_generated_run(
         approved_scope_size=len(approved_set),
         approved_scope_integrity=approved_scope_integrity,
         project_report_evidence_ids=project_report_ids,
-        excluded_records_reaching_project_report=excluded_reaching_report,
+        declared_project_report_references_outside_approved_scope=(
+            declared_report_references_outside_scope
+        ),
         oracle_exposure_status=exposure_status,
         exact_status_matches=exact_status_matches,
         claims=claims,

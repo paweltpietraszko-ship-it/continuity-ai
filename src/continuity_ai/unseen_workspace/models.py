@@ -108,7 +108,7 @@ class EvaluationReport:
     exact_partition_integrity: bool
     valid_evidence_references: int
     total_evidence_references: int
-    citation_validity: bool
+    evidence_reference_validity: bool
     invalid_evidence_references: tuple[str, ...]
     unsafe_automatic_inclusions: tuple[str, ...]
     ambiguous_records_deferred_to_human_review: int
@@ -120,7 +120,7 @@ class EvaluationReport:
     approved_scope_size: int
     approved_scope_integrity: bool
     project_report_evidence_ids: tuple[str, ...]
-    excluded_records_reaching_project_report: tuple[str, ...]
+    declared_project_report_references_outside_approved_scope: tuple[str, ...]
     oracle_exposure_status: OracleExposureStatus
     exact_status_matches: int
     claims: tuple[ProofClaim, ...]
@@ -149,7 +149,7 @@ class EvaluationReport:
             "exact_partition_integrity": self.exact_partition_integrity,
             "valid_evidence_references": self.valid_evidence_references,
             "total_evidence_references": self.total_evidence_references,
-            "citation_validity": self.citation_validity,
+            "evidence_reference_validity": self.evidence_reference_validity,
             "invalid_evidence_references": list(self.invalid_evidence_references),
             "unsafe_automatic_inclusions": list(self.unsafe_automatic_inclusions),
             "ambiguous_records_deferred_to_human_review": (
@@ -166,8 +166,8 @@ class EvaluationReport:
             "approved_scope_size": self.approved_scope_size,
             "approved_scope_integrity": self.approved_scope_integrity,
             "project_report_evidence_ids": list(self.project_report_evidence_ids),
-            "excluded_records_reaching_project_report": list(
-                self.excluded_records_reaching_project_report
+            "declared_project_report_references_outside_approved_scope": list(
+                self.declared_project_report_references_outside_approved_scope
             ),
             "oracle_exposure_status": self.oracle_exposure_status.value,
             "exact_status_matches": self.exact_status_matches,

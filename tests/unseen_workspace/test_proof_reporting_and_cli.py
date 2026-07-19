@@ -34,12 +34,38 @@ def test_json_and_markdown_are_equivalent_views_of_one_canonical_report(
     markdown = render_evaluation_markdown(report)
 
     assert json.loads(json_text) == report.to_dict()
+    assert '"evidence_reference_validity": true' in json_text
+    assert '"DECLARED_PROJECT_REPORT_REFERENCES_WITHIN_APPROVED_SCOPE"' in json_text
+    assert "Evidence-reference validity" in markdown
+    assert "Declared Project Report references outside approved scope" in markdown
+    assert "does not inspect or certify Project Report statements, spans" in markdown
     assert f"Unseen seed | `{report.unseen_seed}`" in markdown
     assert report.target_project.name in markdown
     assert report.provider_identity in markdown
     assert report.oracle_exposure_status.value in markdown
     assert f"MACHINE-EVALUABLE PROOF: **{report.machine_evaluable_proof.value}**" in markdown
     assert all(claim.name in markdown for claim in report.claims)
+
+
+def test_obsolete_overclaiming_names_are_absent_from_production_output_and_docs(
+    tmp_path: Path,
+) -> None:
+    run = tmp_path / "run"
+    generate_unseen_workspace(run, 691)
+    report = evaluate_generated_run(run, perfect_submission(load_oracle(run)))
+    inspected_text = "\n".join(
+        (
+            render_evaluation_json(report),
+            render_evaluation_markdown(report),
+            Path("README.md").read_text(encoding="utf-8"),
+            Path("docs/UNSEEN_WORKSPACE_GENERATOR_v0.1.md").read_text(encoding="utf-8"),
+        )
+    )
+
+    assert "CITATION_VALIDITY" not in inspected_text
+    assert '"citation_validity"' not in inspected_text
+    assert "PROJECT_REPORT_USES_APPROVED_SCOPE_ONLY" not in inspected_text
+    assert "excluded_records_reaching_project_report" not in inspected_text
 
 
 def test_report_writer_atomically_emits_json_and_markdown_from_canonical_model(

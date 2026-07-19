@@ -57,13 +57,13 @@ def render_evaluation_markdown(report: EvaluationReport) -> str:
         f"| Total and classified record count | {report.classified_records} / {report.total_records} |",
         f"| Records classified exactly once | {report.records_classified_exactly_once} / {report.total_records} |",
         f"| Exact partition integrity | `{str(report.exact_partition_integrity).lower()}` |",
-        f"| Citation validity | `{str(report.citation_validity).lower()}` ({report.valid_evidence_references} / {report.total_evidence_references} valid references) |",
+        f"| Evidence-reference validity | `{str(report.evidence_reference_validity).lower()}` ({report.valid_evidence_references} / {report.total_evidence_references} valid references) |",
         f"| Unsafe automatic inclusions | {len(report.unsafe_automatic_inclusions)} |",
         f"| Ambiguous records deferred to human review | {report.ambiguous_records_deferred_to_human_review} / {report.total_ambiguous_records} |",
         f"| Human overrides | {len(report.human_overrides)} ({len(report.invalid_human_overrides)} invalid) |",
         f"| Approved scope size | {report.approved_scope_size} |",
         f"| Approved scope integrity | `{str(report.approved_scope_integrity).lower()}` |",
-        f"| Excluded records reaching Project Report | {len(report.excluded_records_reaching_project_report)} |",
+        f"| Declared Project Report references outside approved scope | {len(report.declared_project_report_references_outside_approved_scope)} |",
         f"| Exact oracle status matches | {report.exact_status_matches} / {report.total_records} |",
         "",
         "## Named Proof Claims",
@@ -77,6 +77,8 @@ def render_evaluation_markdown(report: EvaluationReport) -> str:
     )
     lines.extend(
         [
+            "",
+            "> Boundary: this checkpoint validates only the declared Project Report evidence-reference set against approved scope. It does not inspect or certify Project Report statements, spans, or statement-level citations.",
             "",
             "## Human Overrides",
             "",
@@ -101,7 +103,7 @@ def render_evaluation_markdown(report: EvaluationReport) -> str:
             f"- Invalid human overrides: {_identity_list(report.invalid_human_overrides)}",
             f"- Approved scope evidence IDs: {_identity_list(report.approved_scope_evidence_ids)}",
             f"- Project Report evidence IDs: {_identity_list(report.project_report_evidence_ids)}",
-            f"- Excluded records reaching Project Report: {_identity_list(report.excluded_records_reaching_project_report)}",
+            f"- Declared Project Report references outside approved scope: {_identity_list(report.declared_project_report_references_outside_approved_scope)}",
             "",
         ]
     )

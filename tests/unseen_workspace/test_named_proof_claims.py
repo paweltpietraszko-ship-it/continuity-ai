@@ -17,12 +17,12 @@ from continuity_ai.unseen_workspace.models import (
 from continuity_ai.unseen_workspace.proof_claims import (
     CLAIM_AMBIGUOUS_DEFERRED,
     CLAIM_APPROVED_SCOPE_INTEGRITY,
-    CLAIM_CITATION_VALIDITY,
+    CLAIM_DECLARED_REPORT_REFERENCES_WITHIN_APPROVED_SCOPE,
+    CLAIM_EVIDENCE_REFERENCE_VALIDITY,
     CLAIM_EXACT_PARTITION_INTEGRITY,
     CLAIM_HUMAN_OVERRIDES_ACCOUNTED,
     CLAIM_NO_UNSAFE_AUTOMATIC_INCLUSIONS,
     CLAIM_ORACLE_NOT_PRESENT,
-    CLAIM_PROJECT_REPORT_APPROVED_SCOPE,
     PROOF_CLAIM_NAMES,
 )
 from .proof_test_support import (
@@ -46,12 +46,12 @@ def test_canonical_report_states_every_required_machine_evaluable_fact(tmp_path:
     assert report.provider_identity == "deterministic-contract-provider"
     assert report.classified_records == report.total_records == 15
     assert report.exact_partition_integrity is True
-    assert report.citation_validity is True
+    assert report.evidence_reference_validity is True
     assert report.unsafe_automatic_inclusions == ()
     assert report.ambiguous_records_deferred_to_human_review == report.total_ambiguous_records
     assert report.human_overrides == ()
     assert report.approved_scope_size > 0
-    assert report.excluded_records_reaching_project_report == ()
+    assert report.declared_project_report_references_outside_approved_scope == ()
     assert report.oracle_exposure_status is OracleExposureStatus.NOT_PRESENT_IN_ENGINE_INPUT
     assert tuple(claim.name for claim in report.claims) == PROOF_CLAIM_NAMES
     assert report.machine_evaluable_proof is ProofStatus.PASS
@@ -79,7 +79,9 @@ def test_exact_partition_integrity_claim_fails_for_duplicate_and_missing_decisio
     assert report.machine_evaluable_proof is ProofStatus.FAIL
 
 
-def test_citation_validity_claim_fails_for_unknown_evidence_reference(tmp_path: Path) -> None:
+def test_evidence_reference_validity_claim_fails_for_unknown_evidence_reference(
+    tmp_path: Path,
+) -> None:
     run = tmp_path / "run"
     generate_unseen_workspace(run, 62)
     submission = perfect_submission(load_oracle(run))
@@ -93,9 +95,9 @@ def test_citation_validity_claim_fails_for_unknown_evidence_reference(tmp_path: 
 
     report = evaluate_generated_run(run, invalid)
 
-    assert report.citation_validity is False
+    assert report.evidence_reference_validity is False
     assert report.invalid_evidence_references == ("EV-UNKNOWN",)
-    assert claim_status(report, CLAIM_CITATION_VALIDITY) is ProofStatus.FAIL
+    assert claim_status(report, CLAIM_EVIDENCE_REFERENCE_VALIDITY) is ProofStatus.FAIL
 
 
 def test_no_unsafe_automatic_inclusions_claim_identifies_excluded_record(
@@ -208,7 +210,7 @@ def test_human_override_claim_rejects_override_of_automatic_include(tmp_path: Pa
     assert claim_status(report, CLAIM_APPROVED_SCOPE_INTEGRITY) is ProofStatus.FAIL
 
 
-def test_project_report_uses_approved_scope_only_claim_detects_excluded_record(
+def test_declared_project_report_references_within_approved_scope_claim_detects_outside_reference(
     tmp_path: Path,
 ) -> None:
     run = tmp_path / "run"
@@ -230,8 +232,11 @@ def test_project_report_uses_approved_scope_only_claim_detects_excluded_record(
 
     report = evaluate_generated_run(run, leaked)
 
-    assert report.excluded_records_reaching_project_report == (excluded_id,)
-    assert claim_status(report, CLAIM_PROJECT_REPORT_APPROVED_SCOPE) is ProofStatus.FAIL
+    assert report.declared_project_report_references_outside_approved_scope == (excluded_id,)
+    assert (
+        claim_status(report, CLAIM_DECLARED_REPORT_REFERENCES_WITHIN_APPROVED_SCOPE)
+        is ProofStatus.FAIL
+    )
 
 
 def test_oracle_not_present_in_engine_input_claim_detects_exposure_marker(

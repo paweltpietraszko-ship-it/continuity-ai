@@ -48,7 +48,7 @@ The evaluator accepts one explicit later-stage submission:
 }
 ```
 
-`provider_identity` is a declared identity and is reported exactly; this evaluator does not claim cryptographic provider attestation. Automatic decisions use `include`, `exclude`, or `defer`. A human override may resolve only an automatically deferred record and must resolve it to `include` or `exclude`. Approved scope must equal final `include` decisions after valid overrides. Project Report evidence must be a subset of approved scope.
+`provider_identity` is a declared identity and is reported exactly; this evaluator does not claim cryptographic provider attestation. Automatic decisions use `include`, `exclude`, or `defer`. A human override may resolve only an automatically deferred record and must resolve it to `include` or `exclude`. Approved scope must equal final `include` decisions after valid overrides. The submitted `project_report_evidence_ids` declaration must be a subset of approved scope.
 
 ## Emit equivalent JSON and Markdown proof
 
@@ -80,9 +80,9 @@ The callable contracts are:
 
 PASS requires every oracle record to have exactly one automatic decision and requires zero automatic decisions referencing unknown records. The report exposes total records, classified records, and records classified exactly once.
 
-## Product invariant: CITATION_VALIDITY
+## Product invariant: EVIDENCE_REFERENCE_VALIDITY
 
-PASS requires every evidence ID referenced by automatic decisions, human overrides, approved scope, and Project Report to exist in the generated workspace. The report exposes valid/total references and every invalid identity.
+PASS requires every evidence ID referenced by automatic decisions, human overrides, approved scope, and the declared Project Report reference set to exist in the generated workspace. The report exposes valid/total references and every invalid identity. This proves evidence-reference validity only; it does not prove statement-level citations, span ownership, or report-statement binding.
 
 ## Product invariant: NO_UNSAFE_AUTOMATIC_INCLUSIONS
 
@@ -100,9 +100,9 @@ PASS requires each human override to be unique, reference a valid record, and re
 
 PASS requires the submitted approved scope to have no duplicates and equal the final `include` partition after valid human overrides. The report exposes approved evidence IDs and approved scope size.
 
-## Product invariant: PROJECT_REPORT_USES_APPROVED_SCOPE_ONLY
+## Product invariant: DECLARED_PROJECT_REPORT_REFERENCES_WITHIN_APPROVED_SCOPE
 
-PASS requires every evidence ID reaching Project Report to belong to approved scope. The report explicitly lists excluded records reaching Project Report.
+PASS requires every evidence ID in the submitted `project_report_evidence_ids` declaration to belong to approved scope. The report explicitly lists declared references outside approved scope. This checkpoint does not inspect an actual generated Project Report and does not certify report statements, spans, or statement-level citations.
 
 ## Product invariant: ORACLE_NOT_PRESENT_IN_ENGINE_INPUT
 
@@ -120,12 +120,12 @@ PASS requires every automatic status to equal the hidden expected status. This i
 | `TARGET_PROJECT_IDENTIFIED` | `unseen_workspace/evaluator.py::evaluate_generated_run` | `test_canonical_report_states_every_required_machine_evaluable_fact` | `report.json.target_project` | Run Identity / Target project |
 | `PROVIDER_IDENTITY_RECORDED` | `unseen_workspace/evaluation_contracts.py::load_classification_result` | `test_classification_submission_contract_fails_closed` | `report.json.provider_identity` | Run Identity / Provider identity |
 | `EXACT_PARTITION_INTEGRITY` | `unseen_workspace/evaluator.py::evaluate_generated_run` | `test_exact_partition_integrity_claim_fails_for_duplicate_and_missing_decisions` | `report.json.exact_partition_integrity` | Named Proof Claims table |
-| `CITATION_VALIDITY` | `unseen_workspace/evaluator.py::evaluate_generated_run` | `test_citation_validity_claim_fails_for_unknown_evidence_reference` | `report.json.citation_validity` | Evaluation Metrics and Evidence Sets |
+| `EVIDENCE_REFERENCE_VALIDITY` | `unseen_workspace/evaluator.py::evaluate_generated_run` | `test_evidence_reference_validity_claim_fails_for_unknown_evidence_reference` | `report.json.evidence_reference_validity` | Evaluation Metrics and Evidence Sets |
 | `NO_UNSAFE_AUTOMATIC_INCLUSIONS` | `unseen_workspace/evaluator.py::evaluate_generated_run` | `test_no_unsafe_automatic_inclusions_claim_identifies_excluded_record` | `report.json.unsafe_automatic_inclusions` | Evaluation Metrics and Evidence Sets |
 | `AMBIGUOUS_RECORDS_DEFERRED_TO_HUMAN_REVIEW` | `unseen_workspace/evaluator.py::evaluate_generated_run` | `test_ambiguous_records_deferred_to_human_review_claim_counts_every_oracle_ambiguity` | `report.json.ambiguous_records_deferred_to_human_review` | Evaluation Metrics and Named Proof Claims |
 | `HUMAN_OVERRIDES_ACCOUNTED` | `unseen_workspace/evaluator.py::_apply_human_overrides` | `test_human_overrides_accounted_and_approved_scope_integrity_claims_pass` | `report.json.human_overrides` | Human Overrides table |
 | `APPROVED_SCOPE_INTEGRITY` | `unseen_workspace/evaluator.py::evaluate_generated_run` | `test_human_overrides_accounted_and_approved_scope_integrity_claims_pass` | `report.json.approved_scope_integrity` | Evaluation Metrics and Evidence Sets |
-| `PROJECT_REPORT_USES_APPROVED_SCOPE_ONLY` | `unseen_workspace/evaluator.py::evaluate_generated_run` | `test_project_report_uses_approved_scope_only_claim_detects_excluded_record` | `report.json.excluded_records_reaching_project_report` | Evaluation Metrics and Evidence Sets |
+| `DECLARED_PROJECT_REPORT_REFERENCES_WITHIN_APPROVED_SCOPE` | `unseen_workspace/evaluator.py::evaluate_generated_run` | `test_declared_project_report_references_within_approved_scope_claim_detects_outside_reference` | `report.json.declared_project_report_references_outside_approved_scope` | Evaluation Metrics and Evidence Sets |
 | `ORACLE_NOT_PRESENT_IN_ENGINE_INPUT` | `unseen_workspace/evaluation_contracts.py::inspect_engine_input` | `test_oracle_not_present_in_engine_input_claim_detects_exposure_marker` | `report.json.oracle_exposure_status` | Run Identity / Oracle exposure status |
 | `ORACLE_STATUS_MATCH` | `unseen_workspace/evaluator.py::evaluate_generated_run` | `test_canonical_report_states_every_required_machine_evaluable_fact` | `report.json.exact_status_matches` | Evaluation Metrics and Named Proof Claims |
 | JSON/Markdown equivalence | `unseen_workspace/reporting.py` | `test_json_and_markdown_are_equivalent_views_of_one_canonical_report` | `report.json` and `report.md` | CLI prints the same Markdown model |

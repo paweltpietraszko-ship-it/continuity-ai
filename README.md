@@ -31,7 +31,7 @@ uv run continuity-ai evaluate-unseen-workspace \
   --output-root evaluation-proof
 ```
 
-The evaluator emits `evaluation-proof/report.json` and `evaluation-proof/report.md` and prints the Markdown proof. Stable named claims include `EXACT_PARTITION_INTEGRITY`, `CITATION_VALIDITY`, `NO_UNSAFE_AUTOMATIC_INCLUSIONS`, `AMBIGUOUS_RECORDS_DEFERRED_TO_HUMAN_REVIEW`, `HUMAN_OVERRIDES_ACCOUNTED`, `APPROVED_SCOPE_INTEGRITY`, `PROJECT_REPORT_USES_APPROVED_SCOPE_ONLY`, and `ORACLE_NOT_PRESENT_IN_ENGINE_INPUT`.
+The evaluator emits `evaluation-proof/report.json` and `evaluation-proof/report.md` and prints the Markdown proof. Stable named claims include `EXACT_PARTITION_INTEGRITY`, `EVIDENCE_REFERENCE_VALIDITY`, `NO_UNSAFE_AUTOMATIC_INCLUSIONS`, `AMBIGUOUS_RECORDS_DEFERRED_TO_HUMAN_REVIEW`, `HUMAN_OVERRIDES_ACCOUNTED`, `APPROVED_SCOPE_INTEGRITY`, `DECLARED_PROJECT_REPORT_REFERENCES_WITHIN_APPROVED_SCOPE`, and `ORACLE_NOT_PRESENT_IN_ENGINE_INPUT`.
 
 See [Unseen Workspace Generator and Machine-Evaluable Proof v0.1](docs/UNSEEN_WORKSPACE_GENERATOR_v0.1.md) for contracts, exact claim meanings, architecture, and the proof matrix.
 

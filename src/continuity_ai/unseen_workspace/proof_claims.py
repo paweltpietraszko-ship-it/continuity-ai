@@ -13,12 +13,14 @@ CLAIM_UNSEEN_SEED_RECORDED = "UNSEEN_SEED_RECORDED"
 CLAIM_TARGET_PROJECT_IDENTIFIED = "TARGET_PROJECT_IDENTIFIED"
 CLAIM_PROVIDER_IDENTITY_RECORDED = "PROVIDER_IDENTITY_RECORDED"
 CLAIM_EXACT_PARTITION_INTEGRITY = "EXACT_PARTITION_INTEGRITY"
-CLAIM_CITATION_VALIDITY = "CITATION_VALIDITY"
+CLAIM_EVIDENCE_REFERENCE_VALIDITY = "EVIDENCE_REFERENCE_VALIDITY"
 CLAIM_NO_UNSAFE_AUTOMATIC_INCLUSIONS = "NO_UNSAFE_AUTOMATIC_INCLUSIONS"
 CLAIM_AMBIGUOUS_DEFERRED = "AMBIGUOUS_RECORDS_DEFERRED_TO_HUMAN_REVIEW"
 CLAIM_HUMAN_OVERRIDES_ACCOUNTED = "HUMAN_OVERRIDES_ACCOUNTED"
 CLAIM_APPROVED_SCOPE_INTEGRITY = "APPROVED_SCOPE_INTEGRITY"
-CLAIM_PROJECT_REPORT_APPROVED_SCOPE = "PROJECT_REPORT_USES_APPROVED_SCOPE_ONLY"
+CLAIM_DECLARED_REPORT_REFERENCES_WITHIN_APPROVED_SCOPE = (
+    "DECLARED_PROJECT_REPORT_REFERENCES_WITHIN_APPROVED_SCOPE"
+)
 CLAIM_ORACLE_NOT_PRESENT = "ORACLE_NOT_PRESENT_IN_ENGINE_INPUT"
 CLAIM_ORACLE_STATUS_MATCH = "ORACLE_STATUS_MATCH"
 
@@ -27,12 +29,12 @@ PROOF_CLAIM_NAMES = (
     CLAIM_TARGET_PROJECT_IDENTIFIED,
     CLAIM_PROVIDER_IDENTITY_RECORDED,
     CLAIM_EXACT_PARTITION_INTEGRITY,
-    CLAIM_CITATION_VALIDITY,
+    CLAIM_EVIDENCE_REFERENCE_VALIDITY,
     CLAIM_NO_UNSAFE_AUTOMATIC_INCLUSIONS,
     CLAIM_AMBIGUOUS_DEFERRED,
     CLAIM_HUMAN_OVERRIDES_ACCOUNTED,
     CLAIM_APPROVED_SCOPE_INTEGRITY,
-    CLAIM_PROJECT_REPORT_APPROVED_SCOPE,
+    CLAIM_DECLARED_REPORT_REFERENCES_WITHIN_APPROVED_SCOPE,
     CLAIM_ORACLE_NOT_PRESENT,
     CLAIM_ORACLE_STATUS_MATCH,
 )
@@ -46,7 +48,7 @@ def build_proof_claims(
     exact_partition: bool,
     classified_once: int,
     total_records: int,
-    citation_validity: bool,
+    evidence_reference_validity: bool,
     invalid_references: tuple[str, ...],
     unsafe_inclusions: tuple[str, ...],
     ambiguous_deferred: int,
@@ -55,7 +57,7 @@ def build_proof_claims(
     override_count: int,
     approved_scope_integrity: bool,
     approved_scope_size: int,
-    excluded_reaching_report: tuple[str, ...],
+    declared_report_references_outside_scope: tuple[str, ...],
     exposure_status: OracleExposureStatus,
     exact_status_matches: int,
 ) -> tuple[ProofClaim, ...]:
@@ -82,8 +84,8 @@ def build_proof_claims(
             f"{total_records}/{total_records} records classified exactly once; no unknown records",
         ),
         _claim(
-            CLAIM_CITATION_VALIDITY,
-            citation_validity,
+            CLAIM_EVIDENCE_REFERENCE_VALIDITY,
+            evidence_reference_validity,
             f"{len(invalid_references)} invalid evidence references",
             "0 invalid evidence references",
         ),
@@ -112,10 +114,10 @@ def build_proof_claims(
             "approved scope equals final include partition after valid overrides",
         ),
         _claim(
-            CLAIM_PROJECT_REPORT_APPROVED_SCOPE,
-            not excluded_reaching_report,
-            f"{len(excluded_reaching_report)} excluded records reached Project Report",
-            "0 excluded records reach Project Report",
+            CLAIM_DECLARED_REPORT_REFERENCES_WITHIN_APPROVED_SCOPE,
+            not declared_report_references_outside_scope,
+            f"{len(declared_report_references_outside_scope)} declared Project Report references outside approved scope",
+            "0 declared Project Report references outside approved scope",
         ),
         _claim(
             CLAIM_ORACLE_NOT_PRESENT,
