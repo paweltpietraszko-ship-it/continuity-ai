@@ -605,6 +605,143 @@ def test_malformed_output_cannot_produce_successful_receipt(tmp_path: Path) -> N
     assert retained.last_invocation_receipt == receipt
 
 
+def test_semantic_validator_rejection_fails_closed_before_success_commit(
+    tmp_path: Path,
+) -> None:
+    controller, store, _ = _controller(tmp_path)
+    root = _workspace(tmp_path)
+    created = controller.create_session(root)
+
+    def reject(_value: object) -> object:
+        raise ValueError("semantically wrong")
+
+    with pytest.raises(InvalidCodexOutput) as captured:
+        controller.start_investigation(
+            created.controller_session_id,
+            root,
+            CodexOperationRequest("q", SCHEMA, 5, structured_output_validator=reject),
+        )
+
+    receipt = captured.value.receipt
+    assert receipt is not None
+    assert receipt.succeeded is False
+    assert receipt.failure_category is FailureCategory.INVALID_OUTPUT
+    retained = store.load(created.controller_session_id)
+    assert retained.phase is SessionPhase.READY
+    assert retained.codex_session_id is None
+    assert retained.codex_process_active is False
+    assert retained.active_operation is None
+    assert retained.last_successful_invocation_receipt is None
+    assert retained.last_invocation_receipt == receipt
+
+    # Retry on the same controller session is now allowed: phase never left READY.
+    retried = controller.start_investigation(
+        created.controller_session_id, root, _request()
+    )
+    assert retried.session.phase is SessionPhase.INVESTIGATING
+    assert retried.session.codex_session_id == THREAD_ID
+
+
+def test_semantic_validator_is_not_invoked_after_json_schema_rejection(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner(response="not-json", thread_id=None)
+    controller, _, _ = _controller(tmp_path, runner)
+    root = _workspace(tmp_path)
+    created = controller.create_session(root)
+    calls: list[object] = []
+
+    def forbidden(value: object) -> object:
+        calls.append(value)
+        raise AssertionError("validator invoked after JSON Schema rejection")
+
+    with pytest.raises(InvalidCodexOutput):
+        controller.start_investigation(
+            created.controller_session_id,
+            root,
+            CodexOperationRequest("q", SCHEMA, 5, structured_output_validator=forbidden),
+        )
+
+    assert calls == []
+
+
+def test_semantic_validator_exception_is_sanitized_and_not_chained(
+    tmp_path: Path,
+) -> None:
+    controller, _, _ = _controller(tmp_path)
+    root = _workspace(tmp_path)
+    created = controller.create_session(root)
+
+    def leaky(_value: object) -> object:
+        raise ValueError("evidence secret: top-secret-content")
+
+    with pytest.raises(InvalidCodexOutput) as captured:
+        controller.start_investigation(
+            created.controller_session_id,
+            root,
+            CodexOperationRequest("q", SCHEMA, 5, structured_output_validator=leaky),
+        )
+
+    exc = captured.value
+    assert "top-secret-content" not in str(exc)
+    assert exc.__cause__ is None
+
+
+def test_semantic_validator_accepting_payload_still_commits_investigating_with_retained_id(
+    tmp_path: Path,
+) -> None:
+    controller, _, _ = _controller(tmp_path)
+    root = _workspace(tmp_path)
+    created = controller.create_session(root)
+    calls: list[object] = []
+
+    def accept(value: object) -> object:
+        calls.append(value)
+        return value
+
+    result = controller.start_investigation(
+        created.controller_session_id,
+        root,
+        CodexOperationRequest("q", SCHEMA, 5, structured_output_validator=accept),
+    )
+
+    assert calls == [json.loads(VALID_RESPONSE)]
+    assert result.session.phase is SessionPhase.INVESTIGATING
+    assert result.session.codex_session_id == THREAD_ID
+    assert result.receipt.succeeded is True
+    assert result.structured_output == json.loads(VALID_RESPONSE)
+
+
+def test_reporting_semantic_rejection_preserves_prior_successful_receipt_and_allows_retry(
+    tmp_path: Path,
+) -> None:
+    controller, store, _, approved, bound = _bound_for_reporting(tmp_path)
+    prior_successful = bound.last_successful_invocation_receipt
+    assert prior_successful is not None
+
+    def reject(_value: object) -> object:
+        raise ValueError("bad report semantics")
+
+    with pytest.raises(InvalidCodexOutput):
+        controller.start_reporting(
+            bound.controller_session_id,
+            approved,
+            CodexOperationRequest("q", SCHEMA, 5, structured_output_validator=reject),
+        )
+
+    retained = store.load(bound.controller_session_id)
+    assert retained.phase is SessionPhase.APPROVED
+    assert retained.last_successful_invocation_receipt == prior_successful
+    assert retained.last_invocation_receipt != prior_successful
+    assert retained.last_invocation_receipt.failure_category is FailureCategory.INVALID_OUTPUT
+
+    # Retry at the same phase succeeds with a passing validator.
+    retried = controller.start_reporting(
+        bound.controller_session_id, approved, _request()
+    )
+    assert retried.session.phase is SessionPhase.REPORTING
+
+
 def test_input_mutation_cannot_produce_successful_receipt(tmp_path: Path) -> None:
     runner = FakeRunner(mutate_input=True, thread_id=None)
     controller, store, _ = _controller(tmp_path, runner)

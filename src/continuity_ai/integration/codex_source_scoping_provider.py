@@ -14,6 +14,17 @@ retried against OpenAI or a fake provider. It surfaces as a `ProviderError`,
 which `run_source_scoping` already treats as a fail-closed classification
 failure.
 
+A JSON-Schema-valid payload can still be semantically wrong (bound to the
+wrong `target_project`, inventing evidence or span IDs, ...). This provider
+passes the controller the canonical `validate_source_scoping_payload` as its
+`structured_output_validator`, so the controller rejects such a payload
+*before* committing any success (phase transition, retained Codex session id,
+successful receipt) rather than after — see VG-01 in
+`docs/audits/VERTICAL_GLUE_BOUNDED_REVIEW.md`. `run_source_scoping` still
+performs its own canonical validation independently after this provider
+returns, as defense in depth; the semantic check is not moved into the
+controller, only invoked by it as an injected, narrow hook.
+
 The Source Scoping response schema is designed for the OpenAI Responses API
 and uses `maxLength`, a keyword the controller's own output-schema boundary
 (`codex_session._validate_schema_contract`) does not accept. `_codex_schema`
@@ -38,6 +49,7 @@ from continuity_ai.source_scoping.prompts import (
     SOURCE_SCOPING_PROMPT,
     source_scoping_response_schema,
 )
+from continuity_ai.source_scoping.validator import validate_source_scoping_payload
 
 _UNSUPPORTED_CODEX_SCHEMA_KEYWORDS = frozenset({"maxLength"})
 
@@ -82,10 +94,15 @@ class CodexSourceScopingProvider:
         evidence: tuple[Any, ...],
         spans: tuple[Any, ...],
     ) -> dict[str, Any]:
+        def _validate_semantic(payload: object) -> object:
+            validate_source_scoping_payload(payload, target_project, evidence, spans)
+            return payload
+
         request = CodexOperationRequest(
             _build_prompt(target_project, evidence, spans),
             _codex_schema(source_scoping_response_schema()),
             self._timeout_seconds,
+            structured_output_validator=_validate_semantic,
         )
         try:
             result = self._controller.start_investigation(

@@ -244,6 +244,13 @@ class CodexOperationRequest:
     prompt: str
     output_schema: Mapping[str, object]
     timeout_seconds: float = 300.0
+    # Narrow, optional, runtime-only semantic check on the JSON-Schema-valid
+    # structured output. It runs strictly before any success is committed
+    # (before the phase transition, the retained Codex ID, and the successful
+    # receipt): raising or rejecting is treated exactly like an invalid-output
+    # failure. It never widens what JSON Schema already validated; it may
+    # only reject or return an equivalent/normalized value on success.
+    structured_output_validator: Callable[[object], object] | None = None
 
 
 @dataclass(frozen=True)
@@ -1378,6 +1385,24 @@ class CodexSessionController:
                         structured_valid = True
                     except InvalidCodexOutput:
                         category = FailureCategory.INVALID_OUTPUT
+                    if (
+                        category is None
+                        and request.structured_output_validator is not None
+                    ):
+                        # A schema-valid payload can still be semantically
+                        # wrong (e.g. bound to the wrong project). Reject the
+                        # same way as any other invalid output, strictly
+                        # before any success is committed below, and never
+                        # propagate the validator's own exception or the
+                        # evidence it inspected.
+                        try:
+                            structured = request.structured_output_validator(
+                                structured
+                            )
+                        except Exception:
+                            category = FailureCategory.INVALID_OUTPUT
+                            structured_valid = False
+                            structured = None
             if (
                 category is None
                 and resume_session_id is not None
@@ -1667,6 +1692,11 @@ def _validate_operation_request(request: CodexOperationRequest) -> None:
     _validate_schema_contract(request.output_schema)
     if request.output_schema.get("type") != "object":
         raise InvalidSessionState("Codex output schema root must be an object.")
+    if (
+        request.structured_output_validator is not None
+        and not callable(request.structured_output_validator)
+    ):
+        raise InvalidSessionState("Codex structured output validator must be callable.")
 
 
 def _validate_schema_contract(schema: Mapping[str, object]) -> None:
