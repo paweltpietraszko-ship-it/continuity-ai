@@ -2,20 +2,28 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from continuity_ai import conversation
-from continuity_ai.domain import AuthenticatedUserAttestation, SavedAnalysis
+from continuity_ai.analysis_revision import build_analysis_revision_context_binding
+from continuity_ai.domain import AnalysisRevisionProposal, AuthenticatedUserAttestation, SavedAnalysis
 from continuity_ai.errors import PublicError, ProjectMismatchError, ValidationError, VaultLockedError
-from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, hydrate_citations, hydrate_snapshot_citations, snapshot_citation_statuses
+from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, content_sha256, hydrate_citations, hydrate_snapshot_citations, snapshot_citation_statuses
 from continuity_ai.ingestion import ingest_artifacts, read_project_name
 from continuity_ai.provider_selection import create_reasoning_provider
 from continuity_ai.reasoning_pipeline import run_analysis
 from continuity_ai.retained_analysis import RETAINED_ANALYSIS_NONE, RETAINED_ANALYSIS_VALID, restore_latest
+from continuity_ai.source_scoping.bridge_adapter import (
+    STATUS_APPROVED,
+    STATUS_INVALID,
+    STATUS_NONE,
+    STATUS_PENDING_REVIEW,
+    SourceScopingSession,
+)
 from continuity_ai.vault import Vault
 
 
 class Bridge:
-    def __init__(self, provider=None):
+    def __init__(self, provider=None, source_scoping_provider=None):
         self.vault = None
         self.project: str | None = None
         self.artifact_records: tuple = ()
@@ -27,6 +35,7 @@ class Bridge:
         self.last_question: str | None = None
         self.retained_analysis_status: str = RETAINED_ANALYSIS_NONE
         self.provider = provider if provider is not None else create_reasoning_provider()
+        self.source_scoping = SourceScopingSession(source_scoping_provider)
 
     def handle(self, cmd) -> dict:
         command_name = cmd.get("command") if isinstance(cmd, dict) else None
@@ -63,6 +72,7 @@ class Bridge:
             self.artifact_evidence_records = ()
             self.records = candidate_records
             self.spans = candidate_spans
+            self.source_scoping.reset()
             self._restore_from_vault(clear_project=True)
             return {"session_id": session.session_id, "owner_display_name": candidate.payload["owner"]["display_name"]}
 
@@ -85,6 +95,7 @@ class Bridge:
             self.artifact_evidence_records = ()
             self.records = candidate_records
             self.spans = candidate_spans
+            self.source_scoping.reset()
             self._restore_from_vault(clear_project=True)
             return {"session_id": session.session_id, "owner_display_name": candidate.payload["owner"]["display_name"]}
 
@@ -92,8 +103,7 @@ class Bridge:
             if self.vault is None:
                 raise VaultLockedError()
             self.vault.lock()
-            self.records = self.artifact_records
-            self.spans = build_spans(self.artifact_records)
+            self._prepare_downstream_project_evidence(after_vault_lock=True)
             self._invalidate_analysis()
             return {"locked": True}
 
@@ -120,6 +130,16 @@ class Bridge:
             # discarding it (F-05). Citation source status is recomputed against the
             # newly loaded evidence the next time cards are hydrated.
             self._restore_from_vault(clear_project=False)
+            self.source_scoping.restore(project_name, self.artifact_records, self.vault)
+            try:
+                _, _, scoped = self._prepare_downstream_project_evidence()
+            except ValidationError:
+                self.records = ()
+                self.spans = ()
+                self._invalidate_analysis()
+            else:
+                if scoped and not self._analysis_matches_live_evidence():
+                    self._invalidate_analysis()
             return {
                 "project": self.project,
                 "artifact_evidence_count": len(self.artifact_records),
@@ -127,13 +147,41 @@ class Bridge:
                 "evidence_records": self.artifact_evidence_records,
             }
 
+        if name == "scope_project_sources":
+            if not self.artifact_records or self.project is None:
+                raise ValidationError()
+            requested_target = cmd.get("target_project", self.project)
+            if requested_target != self.project:
+                raise ProjectMismatchError()
+            response = self.source_scoping.classify(self.project, self.artifact_records)
+            self._invalidate_analysis()
+            return {"project": self.project, **response}
+
+        if name == "confirm_source_scope":
+            if self.project is None or not self.artifact_records:
+                raise ValidationError()
+            overrides = cmd.get("overrides")
+            if not isinstance(overrides, dict):
+                raise ValidationError()
+            response = self.source_scoping.approve(
+                self.artifact_records, overrides, vault=self.vault
+            )
+            self._invalidate_analysis()
+            self._prepare_downstream_project_evidence()
+            return {
+                "project": self.project,
+                "evidence_count": len(self.records),
+                **response,
+            }
+
         if name == "analyze_project":
-            if not self.records or self.project is None:
+            records, _, _ = self._prepare_downstream_project_evidence()
+            if not records or self.project is None:
                 raise ValidationError()
             question = cmd.get("question", "")
             if not isinstance(question, str) or not question.strip():
                 raise ValidationError()
-            result, spans, snapshot = run_analysis(self.records, question, self.provider)
+            result, spans, snapshot = run_analysis(records, question, self.provider)
             saved = SavedAnalysis(snapshot.analysis_id, snapshot.created_at, result, snapshot, question, self.project)
             persisted = False
             if self.vault is not None:
@@ -158,8 +206,17 @@ class Bridge:
         if name == "send_message":
             message = cmd["message"]
             revision_candidate = cmd.get("revision_candidate")
+            records, spans, scoped = self._prepare_downstream_project_evidence()
             return conversation.send_message(
-                message, self.records, self.spans, vault=self.vault, revision_candidate=revision_candidate
+                message,
+                records,
+                spans,
+                vault=self.vault,
+                revision_candidate=revision_candidate,
+                project_only=scoped,
+                target_project=self.project,
+                source_scoping_status=self.source_scoping.status,
+                approved_source_scope=self.source_scoping.approved_scope,
             )
 
         if name == "confirm_attestation":
@@ -170,8 +227,10 @@ class Bridge:
                 raise ValidationError()
             proposal_id = cmd["proposal_id"]
             attestation = self.vault.confirm_attestation(proposal_id)
-            self._refresh_evidence()
-            result, spans, snapshot = run_analysis(self.records, self.last_question, self.provider)
+            records, _, _ = self._prepare_downstream_project_evidence(
+                refresh_unscoped_projection=True,
+            )
+            result, spans, snapshot = run_analysis(records, self.last_question, self.provider)
             self.analysis = result
             self.spans = spans
             self.snapshot = snapshot
@@ -187,7 +246,18 @@ class Bridge:
             if self.vault is None:
                 raise VaultLockedError()
             proposal_id = cmd["proposal_id"]
-            result = conversation.confirm_analysis_revision(self.vault, proposal_id)
+            current_context_binding = build_analysis_revision_context_binding(
+                self.vault,
+                target_project=self.project,
+                source_scoping_status=self.source_scoping.status,
+                approved_source_scope=self.source_scoping.approved_scope,
+                records=self.records,
+            )
+            result = conversation.confirm_analysis_revision(
+                self.vault,
+                proposal_id,
+                current_context_binding,
+            )
             self.analysis = result
             cards = hydrate_citations(_citation_span_ids(result), self.records, self.spans)
             return {"confirmed": True, "proposal_id": proposal_id, "citation_cards": cards, **_analysis_fields(result)}
@@ -219,6 +289,8 @@ class Bridge:
                 "pending_attestation_count": pending_attestation_count,
                 "pending_revision_count": pending_revision_count,
             }
+            if self.source_scoping.status != STATUS_NONE:
+                data.update(self.source_scoping.state_payload())
             if self.analysis is not None and self.snapshot is not None and self.last_question and self.project:
                 saved = SavedAnalysis(self.snapshot.analysis_id, self.snapshot.created_at, self.analysis, self.snapshot, self.last_question, self.project)
                 data.update(_analysis_fields(self.analysis))
@@ -227,8 +299,58 @@ class Bridge:
 
         raise PublicError("unknown_command", "The command is not supported.")
 
-    def _refresh_evidence(self) -> None:
-        self.records, self.spans = _compose_evidence(self.artifact_records, self.vault)
+    def _prepare_downstream_project_evidence(
+        self,
+        *,
+        after_vault_lock: bool = False,
+        refresh_unscoped_projection: bool = False,
+    ) -> tuple[tuple, tuple, bool]:
+        """Apply the one authoritative Source Scoping boundary for project consumers."""
+        status = self.source_scoping.status
+        if status == STATUS_NONE:
+            if after_vault_lock or refresh_unscoped_projection:
+                self.records, self.spans = _compose_evidence(
+                    self.artifact_records,
+                    self.vault,
+                )
+            return self.records, self.spans, False
+
+        if status in {STATUS_PENDING_REVIEW, STATUS_INVALID}:
+            if after_vault_lock:
+                self.records = ()
+                self.spans = ()
+                return self.records, self.spans, True
+            raise ValidationError()
+
+        if status != STATUS_APPROVED:
+            if after_vault_lock:
+                self.records = ()
+                self.spans = ()
+                return self.records, self.spans, True
+            raise ValidationError()
+
+        approved_artifacts = self.source_scoping.active_evidence(
+            self.artifact_records
+        )
+        self.records, self.spans = _compose_evidence(
+            approved_artifacts,
+            self.vault,
+        )
+        return self.records, self.spans, True
+
+    def _prepare_analysis_evidence(self) -> None:
+        """Preserve the existing analysis seam while delegating to the canonical boundary."""
+        self._prepare_downstream_project_evidence()
+
+    def _analysis_matches_live_evidence(self) -> bool:
+        if self.snapshot is None:
+            return True
+        snapshot_records = tuple(
+            (str(record["evidence_id"]), str(record["canonical_content_sha256"]))
+            for record in self.snapshot.records
+        )
+        live_records = tuple((record.evidence_id, content_sha256(record.content)) for record in self.records)
+        return snapshot_records == live_records
 
     def _hydrate_retained_cards(self, saved: SavedAnalysis, result) -> tuple:
         """Historical citation text and metadata always come from the retained
@@ -333,7 +455,14 @@ def _snapshot_fields(snapshot) -> dict:
 
 def _ser(v):
     if is_dataclass(v):
-        return asdict(v)
+        return {
+            field.name: _ser(getattr(v, field.name))
+            for field in fields(v)
+            if not (
+                isinstance(v, AnalysisRevisionProposal)
+                and field.name == 'context_binding'
+            )
+        }
     if isinstance(v, tuple):
         return [_ser(x) for x in v]
     if isinstance(v, dict):
