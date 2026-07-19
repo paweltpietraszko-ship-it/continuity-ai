@@ -28,13 +28,37 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e . pytest pytest-socket
 
-      - name: Preflight complete validation
+      - name: Run preflight or publish exact failure log
+        shell: bash
         run: |
-          python -m pytest tests/source_scoping -q
-          python -m pytest tests/source_scoping/test_codex_audit_regressions.py -q
-          python -m pytest -q
-          python -m compileall -q src
-          git diff --check 28a7d1dbb82bebb09e01a39f0191f085c7bf0354...HEAD
+          set -uo pipefail
+          run_or_record() {
+            local label="$1"
+            shift
+            set +e
+            "$@" 2>&1 | tee /tmp/lifecycle-audit.log
+            local code=${PIPESTATUS[0]}
+            set -e
+            if [ "${code}" -ne 0 ]; then
+              {
+                echo "FAILED GATE: ${label}"
+                echo
+                cat /tmp/lifecycle-audit.log
+              } > LIFECYCLE_AUDIT_FAILURE.txt
+              git config user.name "continuity-source-scoping-audit"
+              git config user.email "actions@users.noreply.github.com"
+              git add LIFECYCLE_AUDIT_FAILURE.txt
+              git commit -m "[skip ci] Record lifecycle audit failure"
+              git push origin HEAD:feature/project-source-scoping-v0.1
+              exit "${code}"
+            fi
+          }
+
+          run_or_record source-scoping python -m pytest tests/source_scoping -q
+          run_or_record previous-audit-regressions python -m pytest tests/source_scoping/test_codex_audit_regressions.py -q
+          run_or_record full-backend python -m pytest -q
+          run_or_record compileall python -m compileall -q src
+          run_or_record diff-check git diff --check 28a7d1dbb82bebb09e01a39f0191f085c7bf0354...HEAD
 
       - name: Create exact final commit without temporary workflow
         run: |
@@ -83,10 +107,7 @@ jobs:
             shift
             local safe_name="${base_context//\//-}"
             local xml="/tmp/${safe_name}.xml"
-            set +e
             python -m pytest "$@" -q --junitxml="${xml}"
-            local code=$?
-            set -e
             local tests
             tests="$(python - "${xml}" <<'PY'
           import sys
@@ -96,24 +117,16 @@ jobs:
           print(sum(int(item.attrib.get("tests", 0)) for item in suites))
           PY
           )"
-            if [ "${code}" -eq 0 ]; then
-              post_status "${base_context}/${tests}-passed" success "${tests} tests passed"
-            else
-              post_status "${base_context}/${tests}-collected-failed" failure "pytest failed"
-              exit "${code}"
-            fi
+            post_status "${base_context}/${tests}-passed" success "${tests} tests passed"
           }
 
           run_counted_pytest source-scoping/tests tests/source_scoping
           run_counted_pytest source-scoping/audit-regressions tests/source_scoping/test_codex_audit_regressions.py
           run_counted_pytest backend/pytest
-
           python -m compileall -q src
           post_status python/compileall success "python -m compileall -q src passed"
-
           git diff --check 28a7d1dbb82bebb09e01a39f0191f085c7bf0354...HEAD
           post_status repository/diff-check success "git diff --check passed"
-
           test -z "$(git status --short)"
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/feature/project-source-scoping-v0.1)"
           post_status repository/head success "clean; local HEAD equals upstream"
