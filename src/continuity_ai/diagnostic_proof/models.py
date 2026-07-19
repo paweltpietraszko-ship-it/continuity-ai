@@ -11,8 +11,11 @@ from continuity_ai.unseen_workspace.models import EvaluationReport, ProofStatus
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticWorkspace:
-    """Generated roots; only ``input_root`` may cross the engine boundary."""
+    """Controller roots; only standalone ``input_root`` crosses into the engine."""
 
+    evaluation_root: Path
+    generated_input_root: Path
+    engine_root: Path
     input_root: Path
     oracle_root: Path
 
