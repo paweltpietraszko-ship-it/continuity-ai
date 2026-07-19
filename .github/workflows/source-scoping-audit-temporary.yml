@@ -1,0 +1,46 @@
+name: Temporary Source Scoping Audit
+
+on:
+  push:
+    branches:
+      - feature/project-source-scoping-v0.1
+  workflow_dispatch:
+
+jobs:
+  backend-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/project-source-scoping-v0.1
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install repository and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest pytest-socket
+
+      - name: Confirm exact checkout
+        run: |
+          git branch --show-current
+          git rev-parse HEAD
+          git status --short
+
+      - name: Source Scoping tests
+        run: python -m pytest tests/source_scoping -q
+
+      - name: Four Codex audit reproductions
+        run: python -m pytest tests/source_scoping/test_codex_audit_regressions.py -q
+
+      - name: Full backend pytest
+        run: python -m pytest -q
+
+      - name: Repository checks
+        run: |
+          git diff --check b42a0787d7cc6820412369e29efe5cad3ad62e0f...HEAD
+          git status --short
