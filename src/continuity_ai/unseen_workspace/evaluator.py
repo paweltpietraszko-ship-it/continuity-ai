@@ -1,157 +1,214 @@
-"""Oracle-backed evaluation isolated from production workspace ingestion."""
+"""Canonical proof metric computation for generated unseen workspaces."""
 
 from __future__ import annotations
 
-import json
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any
 
+from continuity_ai.unseen_workspace.evaluation_contracts import (
+    ScopeEvaluationError,
+    inspect_engine_input,
+    load_classification_result,
+    load_expected_scope,
+    load_run_metadata,
+    validate_classification_result,
+)
 from continuity_ai.unseen_workspace.models import (
-    ClassificationDecision,
     ClassificationResult,
     EvaluationReport,
+    HumanOverride,
+    ProofStatus,
     ScopeStatus,
 )
-
-_RESULT_FIELDS = {"schema_version", "decisions"}
-_DECISION_FIELDS = {"evidence_id", "status"}
-_EXPECTED_FIELDS = {"schema_version", "target_project", "records"}
-_EXPECTED_RECORD_FIELDS = {"evidence_id", "expected_status", "scenario_tags"}
+from continuity_ai.unseen_workspace.proof_claims import (
+    build_proof_claims,
+)
 
 
-class ScopeEvaluationError(RuntimeError):
-    """Raised when a classification result or hidden oracle is malformed."""
+def evaluate_generated_run(
+    run_root: Path,
+    classification_result: ClassificationResult,
+) -> EvaluationReport:
+    """Produce the canonical proof result for one generated run and submission."""
 
+    validate_classification_result(classification_result)
+    run_root = Path(run_root)
+    expected = load_expected_scope(run_root / "oracle" / "expected_scope.json")
+    metadata = load_run_metadata(run_root / "oracle" / "metadata.json")
+    if metadata.target_project != expected.target_project:
+        raise ScopeEvaluationError("Oracle target project disagrees with run metadata.")
+    if metadata.record_count != len(expected.statuses):
+        raise ScopeEvaluationError("Oracle record count disagrees with run metadata.")
 
-def load_classification_result(path: Path) -> ClassificationResult:
-    """Load a later classifier's strict JSON output contract."""
+    exposure_status, input_target = inspect_engine_input(run_root / "input")
+    if input_target is not None and input_target != expected.target_project:
+        raise ScopeEvaluationError("Engine input target project disagrees with the oracle.")
 
-    payload = _load_json(path, "Classification result")
-    if not isinstance(payload, dict) or set(payload) != _RESULT_FIELDS:
-        raise ScopeEvaluationError("Classification result fields are missing or unexpected.")
-    if payload.get("schema_version") != 1:
-        raise ScopeEvaluationError("Classification result schema_version is unsupported.")
-    decisions = payload.get("decisions")
-    if not isinstance(decisions, list):
-        raise ScopeEvaluationError("Classification decisions must be an array.")
+    expected_ids = set(expected.statuses)
+    counts = Counter(decision.evidence_id for decision in classification_result.decisions)
+    by_id: dict[str, list[ScopeStatus]] = defaultdict(list)
+    for decision in classification_result.decisions:
+        by_id[decision.evidence_id].append(decision.status)
 
-    parsed: list[ClassificationDecision] = []
-    for decision in decisions:
-        if not isinstance(decision, dict) or set(decision) != _DECISION_FIELDS:
-            raise ScopeEvaluationError("Classification decision fields are missing or unexpected.")
-        evidence_id = _canonical_string(decision.get("evidence_id"), "decision evidence_id")
-        parsed.append(
-            ClassificationDecision(
-                evidence_id=evidence_id,
-                status=_parse_status(decision.get("status"), "decision status"),
-            )
+    classified_records = sum(counts[evidence_id] > 0 for evidence_id in expected_ids)
+    classified_once = sum(counts[evidence_id] == 1 for evidence_id in expected_ids)
+    unknown_decision_ids = {evidence_id for evidence_id in counts if evidence_id not in expected_ids}
+    exact_partition = classified_once == len(expected_ids) and not unknown_decision_ids
+
+    all_references = _all_evidence_references(classification_result)
+    invalid_references = tuple(sorted({item for item in all_references if item not in expected_ids}))
+    valid_reference_count = sum(item in expected_ids for item in all_references)
+    citation_validity = not invalid_references
+
+    unsafe_inclusions = tuple(
+        sorted(
+            {
+                decision.evidence_id
+                for decision in classification_result.decisions
+                if decision.status is ScopeStatus.INCLUDE
+                and expected.statuses.get(decision.evidence_id) is not ScopeStatus.INCLUDE
+            }
         )
-    return ClassificationResult(decisions=tuple(parsed))
+    )
+    ambiguous_ids = set(expected.ambiguous_evidence_ids)
+    ambiguous_not_deferred = tuple(
+        sorted(
+            evidence_id
+            for evidence_id in ambiguous_ids
+            if by_id[evidence_id] != [ScopeStatus.DEFER]
+        )
+    )
+    ambiguous_deferred = len(ambiguous_ids) - len(ambiguous_not_deferred)
+
+    invalid_overrides, final_statuses = _apply_human_overrides(
+        expected_ids,
+        by_id,
+        classification_result.human_overrides,
+    )
+    submitted_scope = tuple(sorted(classification_result.approved_scope_evidence_ids))
+    expected_approved_scope = tuple(
+        sorted(
+            evidence_id
+            for evidence_id, status in final_statuses.items()
+            if status is ScopeStatus.INCLUDE
+        )
+    )
+    approved_scope_integrity = (
+        len(submitted_scope) == len(set(submitted_scope))
+        and submitted_scope == expected_approved_scope
+        and not invalid_overrides
+    )
+    approved_set = set(submitted_scope)
+    project_report_ids = tuple(sorted(classification_result.project_report_evidence_ids))
+    excluded_reaching_report = tuple(
+        sorted({evidence_id for evidence_id in project_report_ids if evidence_id not in approved_set})
+    )
+    exact_status_matches = sum(
+        counts[evidence_id] == 1 and by_id[evidence_id] == [expected_status]
+        for evidence_id, expected_status in expected.statuses.items()
+    )
+
+    claims = build_proof_claims(
+        unseen_seed=metadata.seed,
+        target_project=expected.target_project,
+        provider_identity=classification_result.provider_identity,
+        exact_partition=exact_partition,
+        classified_once=classified_once,
+        total_records=len(expected_ids),
+        citation_validity=citation_validity,
+        invalid_references=invalid_references,
+        unsafe_inclusions=unsafe_inclusions,
+        ambiguous_deferred=ambiguous_deferred,
+        total_ambiguous=len(ambiguous_ids),
+        invalid_overrides=invalid_overrides,
+        override_count=len(classification_result.human_overrides),
+        approved_scope_integrity=approved_scope_integrity,
+        approved_scope_size=len(approved_set),
+        excluded_reaching_report=excluded_reaching_report,
+        exposure_status=exposure_status,
+        exact_status_matches=exact_status_matches,
+    )
+    proof_status = (
+        ProofStatus.PASS
+        if all(claim.status is ProofStatus.PASS for claim in claims)
+        else ProofStatus.FAIL
+    )
+    return EvaluationReport(
+        unseen_seed=metadata.seed,
+        target_project=expected.target_project,
+        provider_identity=classification_result.provider_identity,
+        classified_records=classified_records,
+        total_records=len(expected_ids),
+        records_classified_exactly_once=classified_once,
+        exact_partition_integrity=exact_partition,
+        valid_evidence_references=valid_reference_count,
+        total_evidence_references=len(all_references),
+        citation_validity=citation_validity,
+        invalid_evidence_references=invalid_references,
+        unsafe_automatic_inclusions=unsafe_inclusions,
+        ambiguous_records_deferred_to_human_review=ambiguous_deferred,
+        total_ambiguous_records=len(ambiguous_ids),
+        ambiguous_records_not_deferred=ambiguous_not_deferred,
+        human_overrides=tuple(classification_result.human_overrides),
+        invalid_human_overrides=invalid_overrides,
+        approved_scope_evidence_ids=submitted_scope,
+        approved_scope_size=len(approved_set),
+        approved_scope_integrity=approved_scope_integrity,
+        project_report_evidence_ids=project_report_ids,
+        excluded_records_reaching_project_report=excluded_reaching_report,
+        oracle_exposure_status=exposure_status,
+        exact_status_matches=exact_status_matches,
+        claims=claims,
+        machine_evaluable_proof=proof_status,
+    )
 
 
 def evaluate_scope(
     expected_scope_path: Path,
     classification_result: ClassificationResult,
 ) -> EvaluationReport:
-    """Compare a classification result with an explicitly supplied hidden oracle."""
+    """Compatibility entry point for generated-run oracle paths.
 
-    expected = _load_expected_scope(expected_scope_path)
-    expected_ids = set(expected)
-    counts = Counter(decision.evidence_id for decision in classification_result.decisions)
-    by_id: dict[str, list[ScopeStatus]] = defaultdict(list)
-    for decision in classification_result.decisions:
-        by_id[decision.evidence_id].append(decision.status)
+    The expected scope must remain at ``generated-run/oracle/expected_scope.json``
+    so evaluation can prove seed, input isolation, and metadata consistency too.
+    """
 
-    invalid = tuple(sorted({evidence_id for evidence_id in counts if evidence_id not in expected_ids}))
-    unsafe = tuple(
-        sorted(
-            evidence_id
-            for evidence_id, expected_status in expected.items()
-            if expected_status is not ScopeStatus.INCLUDE and ScopeStatus.INCLUDE in by_id[evidence_id]
+    path = Path(expected_scope_path)
+    if path.name != "expected_scope.json" or path.parent.name != "oracle":
+        raise ScopeEvaluationError(
+            "Expected scope must be generated-run/oracle/expected_scope.json."
         )
+    return evaluate_generated_run(path.parent.parent, classification_result)
+
+
+def _all_evidence_references(result: ClassificationResult) -> tuple[str, ...]:
+    return (
+        tuple(decision.evidence_id for decision in result.decisions)
+        + tuple(override.evidence_id for override in result.human_overrides)
+        + tuple(result.approved_scope_evidence_ids)
+        + tuple(result.project_report_evidence_ids)
     )
-    ambiguous_ids = {
-        evidence_id for evidence_id, status in expected.items() if status is ScopeStatus.DEFER
+
+
+def _apply_human_overrides(
+    expected_ids: set[str],
+    automatic: dict[str, list[ScopeStatus]],
+    overrides: tuple[HumanOverride, ...],
+) -> tuple[tuple[str, ...], dict[str, ScopeStatus]]:
+    override_counts = Counter(override.evidence_id for override in overrides)
+    invalid: set[str] = set()
+    final_statuses = {
+        evidence_id: statuses[0]
+        for evidence_id, statuses in automatic.items()
+        if evidence_id in expected_ids and len(statuses) == 1
     }
-    correctly_deferred = sum(
-        counts[evidence_id] == 1 and by_id[evidence_id] == [ScopeStatus.DEFER]
-        for evidence_id in ambiguous_ids
-    )
-    exact_matches = sum(
-        counts[evidence_id] == 1 and by_id[evidence_id] == [expected_status]
-        for evidence_id, expected_status in expected.items()
-    )
-
-    return EvaluationReport(
-        classified_records=sum(counts[evidence_id] > 0 for evidence_id in expected_ids),
-        total_records=len(expected_ids),
-        records_classified_exactly_once=sum(counts[evidence_id] == 1 for evidence_id in expected_ids),
-        valid_evidence_references=sum(
-            decision.evidence_id in expected_ids for decision in classification_result.decisions
-        ),
-        total_evidence_references=len(classification_result.decisions),
-        invalid_evidence_references=invalid,
-        unsafe_automatic_inclusions=unsafe,
-        correctly_deferred_ambiguous_records=correctly_deferred,
-        total_ambiguous_records=len(ambiguous_ids),
-        exact_status_matches=exact_matches,
-    )
-
-
-def _load_expected_scope(path: Path) -> dict[str, ScopeStatus]:
-    payload = _load_json(path, "Expected scope oracle")
-    if not isinstance(payload, dict) or set(payload) != _EXPECTED_FIELDS:
-        raise ScopeEvaluationError("Expected scope fields are missing or unexpected.")
-    if payload.get("schema_version") != 1:
-        raise ScopeEvaluationError("Expected scope schema_version is unsupported.")
-    records = payload.get("records")
-    if not isinstance(records, list) or not records:
-        raise ScopeEvaluationError("Expected scope records must be a non-empty array.")
-
-    expected: dict[str, ScopeStatus] = {}
-    for record in records:
-        if not isinstance(record, dict) or set(record) != _EXPECTED_RECORD_FIELDS:
-            raise ScopeEvaluationError("Expected scope record fields are missing or unexpected.")
-        evidence_id = _canonical_string(record.get("evidence_id"), "oracle evidence_id")
-        if evidence_id in expected:
-            raise ScopeEvaluationError(f"Duplicate oracle evidence_id '{evidence_id}'.")
-        tags = record.get("scenario_tags")
+    for override in overrides:
         if (
-            not isinstance(tags, list)
-            or not tags
-            or any(not isinstance(tag, str) or not tag for tag in tags)
+            override.evidence_id not in expected_ids
+            or override_counts[override.evidence_id] != 1
+            or automatic.get(override.evidence_id) != [ScopeStatus.DEFER]
         ):
-            raise ScopeEvaluationError("Oracle scenario_tags must be a non-empty string array.")
-        expected[evidence_id] = _parse_status(record.get("expected_status"), "oracle expected_status")
-    return expected
-
-
-def _parse_status(value: Any, label: str) -> ScopeStatus:
-    if not isinstance(value, str):
-        raise ScopeEvaluationError(f"{label} must be a string.")
-    try:
-        return ScopeStatus(value)
-    except ValueError as exc:
-        raise ScopeEvaluationError(f"{label} '{value}' is unsupported.") from exc
-
-
-def _canonical_string(value: Any, label: str) -> str:
-    if not isinstance(value, str) or not value.strip() or value != value.strip():
-        raise ScopeEvaluationError(f"{label} must be a canonical non-empty string.")
-    return value
-
-
-def _load_json(path: Path, label: str) -> Any:
-    try:
-        raw_bytes = Path(path).read_bytes()
-    except OSError as exc:
-        raise ScopeEvaluationError(f"{label} could not be read.") from exc
-    try:
-        text = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ScopeEvaluationError(f"{label} is not valid UTF-8.") from exc
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ScopeEvaluationError(f"{label} is not valid JSON.") from exc
+            invalid.add(override.evidence_id)
+            continue
+        final_statuses[override.evidence_id] = override.status
+    return tuple(sorted(invalid)), final_statuses

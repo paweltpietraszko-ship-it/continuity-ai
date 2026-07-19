@@ -13,6 +13,13 @@ from continuity_ai.unseen_workspace.models import (
     RawWorkspaceRecord,
     WorkspaceInput,
 )
+from continuity_ai.unseen_workspace.validation import (
+    canonical_nonempty_string,
+    is_unsafe_link,
+    load_utf8_json,
+    parse_project_reference,
+    require_exact_object,
+)
 
 WORKSPACE_FILENAME = "workspace.json"
 RECORDS_DIRECTORY = "records"
@@ -20,7 +27,6 @@ SUPPORTED_FORMATS = frozenset({"txt", "md", "json"})
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _TOP_LEVEL_FIELDS = {"schema_version", "target_project", "records"}
-_PROJECT_FIELDS = {"project_id", "name"}
 _RECORD_FIELDS = {"evidence_id", "format", "path", "sha256"}
 _JSON_RECORD_FIELDS = {"schema_version", "content"}
 
@@ -33,15 +39,18 @@ def load_workspace(input_root: Path) -> WorkspaceInput:
     """Load a raw workspace without consulting any path outside ``input_root``."""
 
     root = Path(input_root)
-    if _is_unsafe_link(root) or not root.is_dir():
+    if is_unsafe_link(root) or not root.is_dir():
         raise RawWorkspaceIngestionError("Workspace input root must be a real directory, not a symlink.")
     root = root.resolve()
     _validate_root_shape(root)
 
     manifest_path = root / WORKSPACE_FILENAME
-    payload = _load_json_file(manifest_path, "Workspace manifest")
-    if not isinstance(payload, dict) or set(payload) != _TOP_LEVEL_FIELDS:
-        raise RawWorkspaceIngestionError("Workspace manifest fields are missing or unexpected.")
+    payload = require_exact_object(
+        load_utf8_json(manifest_path, "Workspace manifest", RawWorkspaceIngestionError),
+        _TOP_LEVEL_FIELDS,
+        "Workspace manifest",
+        RawWorkspaceIngestionError,
+    )
     if payload.get("schema_version") != 1:
         raise RawWorkspaceIngestionError("Workspace manifest schema_version is unsupported.")
 
@@ -81,21 +90,17 @@ def _validate_root_shape(root: Path) -> None:
         )
     manifest = entries[WORKSPACE_FILENAME]
     records = entries[RECORDS_DIRECTORY]
-    if _is_unsafe_link(manifest) or not manifest.is_file():
+    if is_unsafe_link(manifest) or not manifest.is_file():
         raise RawWorkspaceIngestionError("Workspace manifest must be a regular file.")
-    if _is_unsafe_link(records) or not records.is_dir():
+    if is_unsafe_link(records) or not records.is_dir():
         raise RawWorkspaceIngestionError("Workspace records path must be a real directory.")
     for child in records.iterdir():
-        if _is_unsafe_link(child) or not child.is_file():
+        if is_unsafe_link(child) or not child.is_file():
             raise RawWorkspaceIngestionError("Workspace records must be regular files, not links or directories.")
 
 
 def _validate_project(value: Any) -> ProjectReference:
-    if not isinstance(value, dict) or set(value) != _PROJECT_FIELDS:
-        raise RawWorkspaceIngestionError("Target project fields are missing or unexpected.")
-    project_id = _canonical_nonempty_string(value.get("project_id"), "target project_id")
-    name = _canonical_nonempty_string(value.get("name"), "target project name")
-    return ProjectReference(project_id=project_id, name=name)
+    return parse_project_reference(value, "Target project", RawWorkspaceIngestionError)
 
 
 def _load_record(
@@ -104,12 +109,21 @@ def _load_record(
     seen_evidence_ids: set[str],
     seen_paths: set[str],
 ) -> tuple[RawWorkspaceRecord, str]:
-    if not isinstance(value, dict) or set(value) != _RECORD_FIELDS:
-        raise RawWorkspaceIngestionError("Workspace record fields are missing or unexpected.")
-    evidence_id = _canonical_nonempty_string(value.get("evidence_id"), "evidence_id")
-    source_format = _canonical_nonempty_string(value.get("format"), "record format")
-    relative_path = _canonical_nonempty_string(value.get("path"), "record path")
-    sha256 = _canonical_nonempty_string(value.get("sha256"), "record sha256")
+    entry = require_exact_object(
+        value, _RECORD_FIELDS, "Workspace record", RawWorkspaceIngestionError
+    )
+    evidence_id = canonical_nonempty_string(
+        entry.get("evidence_id"), "evidence_id", RawWorkspaceIngestionError
+    )
+    source_format = canonical_nonempty_string(
+        entry.get("format"), "record format", RawWorkspaceIngestionError
+    )
+    relative_path = canonical_nonempty_string(
+        entry.get("path"), "record path", RawWorkspaceIngestionError
+    )
+    sha256 = canonical_nonempty_string(
+        entry.get("sha256"), "record sha256", RawWorkspaceIngestionError
+    )
 
     evidence_key = evidence_id.casefold()
     if evidence_key in seen_evidence_ids:
@@ -178,8 +192,12 @@ def _parse_content(source_format: str, raw_bytes: bytes, relative_path: str) -> 
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
             raise RawWorkspaceIngestionError(f"Record '{relative_path}' is malformed JSON.") from exc
-        if not isinstance(payload, dict) or set(payload) != _JSON_RECORD_FIELDS:
-            raise RawWorkspaceIngestionError(f"JSON record '{relative_path}' has an invalid schema.")
+        payload = require_exact_object(
+            payload,
+            _JSON_RECORD_FIELDS,
+            f"JSON record '{relative_path}'",
+            RawWorkspaceIngestionError,
+        )
         if payload.get("schema_version") != 1:
             raise RawWorkspaceIngestionError(f"JSON record '{relative_path}' has an unsupported schema.")
         content = payload.get("content")
@@ -193,33 +211,6 @@ def _parse_content(source_format: str, raw_bytes: bytes, relative_path: str) -> 
     return normalized
 
 
-def _load_json_file(path: Path, label: str) -> Any:
-    try:
-        raw_bytes = path.read_bytes()
-    except OSError as exc:
-        raise RawWorkspaceIngestionError(f"{label} could not be read.") from exc
-    try:
-        text = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise RawWorkspaceIngestionError(f"{label} is not valid UTF-8.") from exc
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RawWorkspaceIngestionError(f"{label} is not valid JSON.") from exc
-
-
-def _canonical_nonempty_string(value: Any, label: str) -> str:
-    if not isinstance(value, str) or not value.strip() or value != value.strip():
-        raise RawWorkspaceIngestionError(f"{label} must be a canonical non-empty string.")
-    return value
-
-
 def _normalize_text(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     return "\n".join(line.rstrip() for line in normalized.split("\n")).strip()
-
-
-def _is_unsafe_link(path: Path) -> bool:
-    """Treat symbolic links and Windows directory junctions as unsafe input."""
-
-    return path.is_symlink() or path.is_junction()

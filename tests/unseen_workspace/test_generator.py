@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
+from continuity_ai.cli import main
 from continuity_ai.unseen_workspace.generator import (
     UnseenWorkspaceGenerationError,
     generate_unseen_workspace,
@@ -202,11 +204,56 @@ def test_generator_requires_integer_seed_and_new_output_root(tmp_path: Path) -> 
     existing.mkdir()
     with pytest.raises(UnseenWorkspaceGenerationError):
         generate_unseen_workspace(existing, 1)
+    with pytest.raises(UnseenWorkspaceGenerationError):
+        generate_unseen_workspace(tmp_path / "missing-parent" / "run", 1)
+
+
+def test_generator_atomically_publishes_without_temporary_run_residue(tmp_path: Path) -> None:
+    run = tmp_path / "published-run"
+
+    generate_unseen_workspace(run, 321)
+
+    assert run.is_dir()
+    assert list(tmp_path.glob(".published-run.tmp-*")) == []
 
 
 def test_production_generator_contains_no_fixture_specific_names_or_fixed_evidence_ids() -> None:
-    source = Path("src/continuity_ai/unseen_workspace/generator.py").read_text(encoding="utf-8")
+    source = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "src/continuity_ai/unseen_workspace/generator.py",
+            "src/continuity_ai/unseen_workspace/scenario_factory.py",
+        )
+    )
     assert "Project Aurora" not in source
     assert "Project Meridian" not in source
     assert "Project Ember" not in source
     assert not re.search(r"EV-[A-Z]{2,}-00[0-9]", source)
+
+
+def test_generator_cli_requires_explicit_seed_and_emits_visible_run_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run = tmp_path / "cli-run"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "continuity-ai",
+            "generate-unseen-workspace",
+            "--seed",
+            "2468",
+            "--output-root",
+            str(run),
+        ],
+    )
+
+    main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["record_count"] == 15
+    assert output["input_root"] == str(run / "input")
+    assert output["target_project"].startswith("Project ")
+    assert (run / "oracle" / "metadata.json").is_file()
