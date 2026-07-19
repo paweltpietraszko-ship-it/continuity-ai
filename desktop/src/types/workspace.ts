@@ -1,6 +1,12 @@
 export type ProjectKey = "aurora" | "meridian" | "ember";
 
-export type ViewName = "auroraReport" | "workspace" | "breakDetail" | "genericReport" | "liveProject";
+export type ViewName =
+  | "auroraReport"
+  | "workspace"
+  | "breakDetail"
+  | "genericReport"
+  | "liveProject"
+  | "filmDemo";
 
 export type DrawerName = "sources" | "conversation" | null;
 

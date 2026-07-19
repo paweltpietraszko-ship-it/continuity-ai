@@ -11,6 +11,8 @@ import { VaultOverlay } from "./components/VaultOverlay";
 import { Workspace } from "./components/Workspace";
 import type { BridgeBootstrapState } from "./bridge/bootstrap";
 import { AURORA_EVIDENCE, SYNTHETIC_PROJECTS } from "./data/demoWorkspace";
+import { FilmDemoDirector } from "./demo/FilmDemoDirector";
+import { filmDemoConfig } from "./demo/filmDemoEnv";
 import type {
   AuthenticatedAttestation,
   ConversationMessage,
@@ -30,9 +32,14 @@ const INITIAL_MESSAGES: readonly ConversationMessage[] = [
 ];
 
 function initialRoute(): { view: ViewName; project: ProjectKey } {
+  // The Film Demo Director is a fully separate, explicit-flag-only mode: a
+  // launch with CONTINUITY_FILM_DEMO=1 fully configured always opens
+  // straight into it, regardless of the current hash.
+  if (filmDemoConfig()) return { view: "filmDemo", project: "aurora" };
   const hash = window.location.hash.replace("#", "");
   if (hash === "workspace") return { view: "workspace", project: "aurora" };
   if (hash === "live-project") return { view: "liveProject", project: "aurora" };
+  if (hash === "film-demo") return { view: "filmDemo", project: "aurora" };
   if (hash === "aurora-break") return { view: "breakDetail", project: "aurora" };
   if (hash === "meridian" || hash === "ember") return { view: "genericReport", project: hash };
   return { view: "auroraReport", project: "aurora" };
@@ -41,6 +48,7 @@ function initialRoute(): { view: ViewName; project: ProjectKey } {
 function routeHash(view: ViewName, project: ProjectKey): string {
   if (view === "workspace") return "workspace";
   if (view === "liveProject") return "live-project";
+  if (view === "filmDemo") return "film-demo";
   if (view === "breakDetail") return "aurora-break";
   if (view === "genericReport") return project;
   return "aurora";
@@ -90,6 +98,16 @@ export function App({ bootstrap = DEFAULT_BOOTSTRAP }: AppProps) {
     setProject(nextProject);
     setDrawer(null);
     setSelectedEvidenceId(null);
+  }
+
+  if (view === "filmDemo") {
+    const config = filmDemoConfig();
+    // Every hook above has already run unconditionally; only the returned
+    // JSX branches here. The Director owns its whole screen -- no demo
+    // header, drawers, or vault overlay from the synthetic Aurora shell.
+    if (config) {
+      return <FilmDemoDirector config={config} onExit={() => navigate("workspace", "aurora")} />;
+    }
   }
 
   function openProject(nextProject: ProjectKey): void {
