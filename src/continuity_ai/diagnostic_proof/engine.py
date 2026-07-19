@@ -9,6 +9,7 @@ from typing import Any
 from continuity_ai.codex_process import workspace_fingerprint
 from continuity_ai.codex_session import CodexOperationRequest, CodexSessionController
 from continuity_ai.diagnostic_proof.models import CompletedDiagnosticRun
+from continuity_ai.diagnostic_proof.preparation import _oracle_artifacts_absent
 from continuity_ai.domain import ReasoningEvidence
 from continuity_ai.evidence import build_spans
 from continuity_ai.integration.approved_workspace_flow import materialize_approved_scope
@@ -58,6 +59,7 @@ def run_diagnostic_engine(
     """
 
     engine_root = Path(input_root).resolve(strict=True)
+    diagnostic_run_root = _require_oracle_free_run(engine_root)
     approved_root = Path(approved_workspace_root)
     workspace = load_workspace(engine_root)
     evidence, registry = _adapt_engine_input(workspace.records, engine_root)
@@ -72,6 +74,7 @@ def run_diagnostic_engine(
         spans,
         timeout_seconds=timeout_seconds,
     )
+    _require_oracle_free_run(engine_root, expected_run_root=diagnostic_run_root)
     record_scope_awaiting_review(controller, investigation.controller_session_id)
     overrides = dict(review(investigation.scoping_result))
     approved_scope = approve_source_scope(
@@ -86,6 +89,7 @@ def run_diagnostic_engine(
         registry,
         approved_root,
     )
+    _require_oracle_free_run(engine_root, expected_run_root=diagnostic_run_root)
     reporting = bind_and_report_on_approved_workspace(
         controller,
         investigation.controller_session_id,
@@ -101,10 +105,12 @@ def run_diagnostic_engine(
             timeout_seconds,
         ),
     )
+    _require_oracle_free_run(engine_root, expected_run_root=diagnostic_run_root)
     reported_paths = _reported_paths(reporting.structured_output)
     return CompletedDiagnosticRun(
         input_root=engine_root,
         input_fingerprint=original_fingerprint,
+        oracle_absent_during_engine_execution=True,
         approved_workspace_root=materialization.destination_root,
         controller_session_id=investigation.controller_session_id,
         investigation_codex_session_id=investigation.codex_session_id,
@@ -121,6 +127,27 @@ def run_diagnostic_engine(
         reported_relative_paths=reported_paths,
         materialization=materialization,
     )
+
+
+def _require_oracle_free_run(
+    input_root: Path, *, expected_run_root: Path | None = None
+) -> Path:
+    """Fail closed unless standalone input is the only published run tree."""
+
+    engine_root = input_root.parent
+    run_root = engine_root.parent.resolve(strict=True)
+    if (
+        input_root.name != "input"
+        or engine_root.name != "engine"
+        or (expected_run_root is not None and run_root != expected_run_root)
+        or {path.name for path in run_root.iterdir()} != {"engine"}
+        or {path.name for path in engine_root.iterdir()} != {"input"}
+        or not _oracle_artifacts_absent(run_root)
+    ):
+        raise DiagnosticEngineError(
+            "Diagnostic engine requires an oracle-free standalone run root."
+        )
+    return run_root
 
 
 def _adapt_engine_input(records: tuple[Any, ...], root: Path) -> tuple[
