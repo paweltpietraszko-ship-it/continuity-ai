@@ -18,6 +18,7 @@ from continuity_ai.reasoning_pipeline import validate_analysis
 from continuity_ai.reasoning_pipeline import (
     DeterministicOfflineReasoningProvider as PipelineOfflineProvider,
 )
+from continuity_ai.source_scoping.fake_provider import FakeSourceScopingProvider
 
 
 def _record(evidence_id: str, title: str, content: str) -> ReasoningEvidence:
@@ -69,7 +70,13 @@ def test_arbitrary_project_names_and_evidence_ids_flow_through_bridge(
     tmp_path: Path, project: str, evidence_id: str
 ) -> None:
     artifact_root = _write_project(tmp_path / evidence_id, project, evidence_id)
-    bridge = Bridge(DeterministicOfflineReasoningProvider())
+    # This module tests the deterministic offline provider's own genericity
+    # contract, not Source Scoping; the fake provider keeps analyze_project
+    # on the legacy unscoped path this test was written against.
+    bridge = Bridge(
+        DeterministicOfflineReasoningProvider(),
+        source_scoping_provider=FakeSourceScopingProvider(),
+    )
 
     loaded = bridge.handle(
         {"command": "load_project", "artifact_root": str(artifact_root)}

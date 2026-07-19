@@ -502,6 +502,104 @@ def test_run_identity_is_sourced_from_controller_runtime_state(
     )
 
 
+def test_bridge_analyze_project_rejects_direct_call_when_source_scoping_never_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production Bridge (no injected source_scoping_provider): calling
+    analyze_project directly after only load_project, with scope_project_sources
+    never invoked at all, must fail closed with source_scoping_required -- not
+    silently fall back to run_analysis with a local provider."""
+    import continuity_ai.openai_provider as provider_module
+    import continuity_ai.deterministic_offline_provider as offline_module
+
+    fallback_calls: list[str] = []
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        fallback_calls.append("fallback")
+        raise AssertionError("provider fallback invoked")
+
+    monkeypatch.setattr(provider_module, "OpenAIReasoningProvider", forbidden)
+    monkeypatch.setattr(offline_module, "DeterministicOfflineReasoningProvider", forbidden)
+
+    bridge, artifact_root, records = _init_bridge_and_load(tmp_path)
+
+    blocked = bridge.handle(
+        {"command": "analyze_project", "question": "Current state?"}
+    )
+
+    assert blocked["ok"] is False
+    assert blocked["error"]["code"] == "source_scoping_required"
+    assert fallback_calls == []
+    assert bridge.analysis is None
+    assert bridge.retained_analysis_status == "none"
+
+
+def test_bridge_analyze_project_rejects_direct_call_after_investigation_without_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same production gate, exercised mid-flow: a real investigation has
+    started (controller active) but confirm_source_scope was never called, so
+    there is no approved-only workspace, no retained phase transition. This
+    must also fail closed and must never resume run_analysis."""
+    bridge, artifact_root, records = _init_bridge_and_load(tmp_path)
+    classification = _classification_response(bridge.project, records)
+    runner = ScriptedRunner([classification], [THREAD_ID])
+    _patch_local_codex(monkeypatch, runner)
+
+    scoped = bridge.handle({"command": "scope_project_sources"})
+    assert scoped["ok"] is True
+    assert bridge._vertical.controller is not None
+    assert bridge._vertical.approved_workspace_root is None
+
+    blocked = bridge.handle(
+        {"command": "analyze_project", "question": "Current state?"}
+    )
+    assert blocked["ok"] is False
+    # Blocked here by the pre-existing pending-review evidence boundary, one
+    # layer before the vertical-flow readiness gate -- either way, no report
+    # is ever produced without a completed, approved vertical flow.
+    assert blocked["error"]["code"] in {"validation_error", "source_scoping_required"}
+    assert len(runner.calls) == 1
+
+
+def test_bridge_legacy_analyze_path_only_reachable_with_explicitly_injected_source_scoping_provider() -> None:
+    """The old run_analysis fallback stays reachable, but only when a test
+    double is explicitly injected -- never for a plain Bridge() or, by
+    extension, bridge_main.py, which always constructs Bridge() with no
+    arguments."""
+    target, records = load_workspace(
+        Path(__file__).parents[2] / "fixtures" / "source_scoping_mixed_workspace"
+    )
+    records = order_evidence(records)
+
+    class _RecordingProvider:
+        provider_id = "recording-legacy-path-provider"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def analyze(self, evidence, spans, question):
+            self.calls += 1
+            return DeterministicOfflineReasoningProviderForTest().analyze(evidence, spans, question)
+
+    from continuity_ai.reasoning_pipeline import (
+        DeterministicOfflineReasoningProvider as DeterministicOfflineReasoningProviderForTest,
+    )
+
+    provider = _RecordingProvider()
+    bridge = Bridge(provider=provider, source_scoping_provider=FakeSourceScopingProvider())
+    bridge.project = target
+    bridge.artifact_records = records
+    bridge.records = records
+    bridge.spans = build_spans(records)
+
+    response = bridge.handle({"command": "analyze_project", "question": "q"})
+
+    assert response["ok"] is True
+    assert provider.calls == 1
+    assert bridge._vertical.controller is None
+
+
 def test_fake_source_scoping_provider_path_omits_run_identity() -> None:
     target, records = load_workspace(
         Path(__file__).parents[2] / "fixtures" / "source_scoping_mixed_workspace"

@@ -7,7 +7,8 @@ export type PresentationStateKind =
   | "operation_interrupted"
   | "no_report_yet"
   | "citation_selected"
-  | "evidence_unavailable";
+  | "evidence_unavailable"
+  | "browser_demo";
 
 interface PresentationStateCopy {
   readonly label: string;
@@ -59,6 +60,11 @@ const COPY: Record<PresentationStateKind, PresentationStateCopy> = {
   evidence_unavailable: {
     label: "Evidence unavailable",
     detail: "This citation cannot be opened in the current preview set",
+    tone: "unavailable",
+  },
+  browser_demo: {
+    label: "Browser demonstration · no local Bridge",
+    detail: "Running outside the desktop app · no local Bridge process, no live analysis is available here",
     tone: "unavailable",
   },
 };

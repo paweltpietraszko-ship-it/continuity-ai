@@ -37,3 +37,6 @@ class ExternalInformationUnavailableError(PublicError):
 class ProjectMismatchError(PublicError):
     def __init__(self) -> None:
         super().__init__("project_mismatch", "The selected project does not match the retained analysis.")
+class SourceScopingRequiredError(PublicError):
+    def __init__(self) -> None:
+        super().__init__("source_scoping_required", "Run Source Scoping and confirm the approved sources before generating a report.")

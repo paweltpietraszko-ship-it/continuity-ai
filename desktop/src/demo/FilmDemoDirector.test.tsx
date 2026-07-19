@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { desktopBridge } from "../bridge/client";
-import type { BridgeCommand, BridgeCommandResultMap, WorkspaceState } from "../bridge/contracts";
+import type {
+  BridgeCommand,
+  BridgeCommandResultMap,
+  ScopeProjectSourcesData,
+  WorkspaceState,
+} from "../bridge/contracts";
 import { FilmDemoDirector } from "./FilmDemoDirector";
 import type { FilmDemoConfig } from "./filmDemoEnv";
 
@@ -27,6 +32,29 @@ const DEMO_CONFIG: FilmDemoConfig = {
   ownerName: "Demo Owner",
   question: "What is the current project state?",
   password: "demo-password",
+};
+
+const SCOPING_RESULT: ScopeProjectSourcesData = {
+  project: "Project Aurora",
+  source_scope: {
+    schema_version: "1.0",
+    target_project: "Project Aurora",
+    anchor_evidence_ids: ["EV-1"],
+    decisions: [
+      {
+        evidence_id: "EV-1",
+        association_status: "included",
+        basis: "explicit_target",
+        rationale: "Explicitly names Project Aurora.",
+        span_ids: [],
+        related_evidence_ids: [],
+      },
+    ],
+    selected_evidence_ids: ["EV-1"],
+    ambiguous_evidence_ids: [],
+    excluded_evidence_ids: [],
+  },
+  citation_cards: [],
 };
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
@@ -109,5 +137,82 @@ describe("FilmDemoDirector", () => {
     // Neither the button nor Space can push the fail-closed scenario forward.
     await user.keyboard(" ");
     expect(screen.getByText("Shot 2 / 11")).toBeInTheDocument();
+  });
+
+  it("drives shots 1-5 through the exact same Bridge commands as the manual flow, then halts at shot 6 for manual approval", async () => {
+    const requestSpy = vi
+      .spyOn(desktopBridge, "request")
+      .mockImplementation(async <TCommand extends BridgeCommand>(command: TCommand) => {
+        if (command.command === "get_workspace_state") {
+          return EMPTY_STATE as BridgeCommandResultMap[TCommand["command"]];
+        }
+        if (command.command === "initialize_vault") {
+          return { session_id: "SES-demo", owner_display_name: "Demo Owner" } as BridgeCommandResultMap[TCommand["command"]];
+        }
+        if (command.command === "load_project") {
+          return {
+            project: "Project Aurora",
+            artifact_evidence_count: 1,
+            evidence_count: 1,
+            evidence_records: [],
+          } as unknown as BridgeCommandResultMap[TCommand["command"]];
+        }
+        if (command.command === "scope_project_sources") {
+          return SCOPING_RESULT as BridgeCommandResultMap[TCommand["command"]];
+        }
+        throw new Error(`Unexpected command in test: ${command.command}`);
+      });
+
+    render(<FilmDemoDirector config={DEMO_CONFIG} onExit={() => {}} />);
+    const user = userEvent.setup();
+    const continueButton = () => screen.getByRole("button", { name: "Continue (Space)" });
+
+    // Shot 1 -> 2: create-vault
+    await user.click(continueButton());
+    await waitFor(() => expect(screen.getByText("Shot 2 / 11")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Request status: Idle")).toBeInTheDocument());
+
+    // Shot 2 -> 3: load-project
+    await user.click(continueButton());
+    await waitFor(() => expect(screen.getByText("Shot 3 / 11")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Request status: Idle")).toBeInTheDocument());
+
+    // Shot 3 -> 4: run-scoping
+    await user.click(continueButton());
+    await waitFor(() => expect(screen.getByText("Shot 4 / 11")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Request status: Idle")).toBeInTheDocument());
+
+    // Shot 4 -> 5: show-human-review (display-only, no Bridge command)
+    const callsBeforeShot5 = requestSpy.mock.calls.length;
+    await user.click(continueButton());
+    await waitFor(() => expect(screen.getByText("Shot 5 / 11")).toBeInTheDocument());
+    expect(requestSpy.mock.calls.length).toBe(callsBeforeShot5);
+
+    // Shot 5 -> 6: mandatory manual approval. Continue/Space must refuse to
+    // advance any further -- the real approval button (rendered inside
+    // LiveProjectFlow, never in the Director's own panel) is the only way
+    // past this point, and this test never clicks it.
+    await user.click(continueButton());
+    await waitFor(() => expect(screen.getByText("Shot 6 / 11")).toBeInTheDocument());
+    expect(continueButton()).toBeDisabled();
+
+    const callsAtShot6 = requestSpy.mock.calls.length;
+    await user.keyboard(" ");
+    expect(screen.getByText("Shot 6 / 11")).toBeInTheDocument();
+    expect(requestSpy.mock.calls.length).toBe(callsAtShot6);
+
+    expect(
+      screen.getByText(/Waiting for the explicit.*Confirm scope/i, { exact: false }),
+    ).toBeInTheDocument();
+
+    // The exact same commands, in the exact same order, that the manual
+    // Live Project flow issues for these steps -- nothing demo-specific.
+    expect(requestSpy.mock.calls.map(([command]) => command.command)).toEqual([
+      "initialize_vault",
+      "get_workspace_state",
+      "load_project",
+      "get_workspace_state",
+      "scope_project_sources",
+    ]);
   });
 });

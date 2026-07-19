@@ -117,8 +117,9 @@ All commands are sent as a single JSON object with a `command` field. Fields not
 
 - Required: `question` (string, non-blank after trim)
 - Preconditions: at least one evidence record must already be composed (`load_project` and/or an unlocked vault with attestations)
+- **Mandatory vertical flow (production Bridge only):** a real `Bridge()` process -- every instance `bridge_main.py` ever constructs, since it never injects a `source_scoping_provider` -- must have completed the full real Codex vertical flow before `analyze_project` can produce a report: `scope_project_sources` (real Codex investigation) → human review → `confirm_source_scope` (approved-only workspace materialized) → a retained Codex session ID and the session's `APPROVED` phase. If Source Scoping was never started for the current project at all, or was started but not yet confirmed, `analyze_project` fails closed with `source_scoping_required` (or, when the pending-review evidence boundary is hit first, `validation_error`). In both cases no evidence composition, `run_analysis`, OpenAI, or `deterministic_offline` provider call ever happens -- there is no automatic fallback to a local report. This legacy unscoped path is reachable only by explicitly constructing `Bridge(source_scoping_provider=...)` in-process (test doubles only); it is not reachable through `bridge_main.py` or a plain `Bridge()`.
 - Success data: current-state, continuity-break, next-action, and semantic-annotation fields (section 5), `citation_cards` (section 7), and snapshot metadata: `analysis_id`, `created_at`, `prompt_version`, `schema_version`, `provider_id`
-- Failure categories: `validation_error` (no evidence loaded, blank/non-string question, or the reasoning provider's output failing the canonical semantic validator); `provider_error` (the configured provider itself fails)
+- Failure categories: `source_scoping_required` (production Bridge, real Codex vertical flow not completed -- see above); `validation_error` (no evidence loaded, blank/non-string question, Source Scoping pending review, or the reasoning provider's output failing the canonical semantic validator); `provider_error` (the configured provider itself fails)
 - If the vault is currently unlocked, the analysis is transactionally persisted to the encrypted vault before this response is returned, and `retained_analysis_status` becomes `valid`. If no vault is unlocked at the time of the call, the analysis is still produced and returned, but it is not retained; `retained_analysis_status` becomes `none`. It is never reported as `valid` unless persistence actually succeeded.
 
 ### `send_message`
@@ -156,10 +157,14 @@ Minimum filmable backend sequence:
 initialize_vault or unlock_vault
 → load_project
 → get_workspace_state
+→ scope_project_sources
+→ confirm_source_scope
 → analyze_project
 → get_workspace_state
 → lock_vault
 ```
+
+`scope_project_sources` and `confirm_source_scope` are not optional in this sequence for a real (production) Bridge process: see the mandatory-vertical-flow rule under `analyze_project` in section 4. Skipping them and calling `analyze_project` directly is a documented, tested failure path (`source_scoping_required` / `validation_error`), not an alternate success path.
 
 Restart sequence:
 

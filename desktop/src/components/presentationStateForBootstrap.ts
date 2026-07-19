@@ -9,7 +9,8 @@ export function presentationStateForBootstrap(
     case "unavailable":
       return "codex_unavailable";
     case "connected":
-    case "browser_demo":
       return "report_available";
+    case "browser_demo":
+      return "browser_demo";
   }
 }

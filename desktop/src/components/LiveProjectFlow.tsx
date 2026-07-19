@@ -133,14 +133,11 @@ export const LiveProjectFlow = forwardRef<LiveProjectFlowHandle, LiveProjectFlow
     async function startScoping(): Promise<void> {
       await run(async () => {
         const result = await continuitySession.scopeProjectSources();
-        const initialOverrides: Record<string, SourceFinalStatus> = {};
-        for (const decision of result.source_scope.decisions) {
-          if (decision.association_status !== "ambiguous") {
-            initialOverrides[decision.evidence_id] = decision.association_status;
-          }
-        }
         setScoping(result);
-        setOverrides(initialOverrides);
+        // Every source -- regardless of the model's own classification --
+        // requires an explicit human Include/Exclude click below; nothing
+        // is ever pre-approved from Codex's own output.
+        setOverrides({});
         setConfirmed(null);
         setAnalysis(null);
         setStep("reviewing");
@@ -312,9 +309,7 @@ export const LiveProjectFlow = forwardRef<LiveProjectFlowHandle, LiveProjectFlow
                 Unlock existing vault…
               </button>
             </div>
-            {vaultPath ? (
-              <p className="live-project-path">Vault: {filmDemoMode ? "(demo vault)" : vaultPath}</p>
-            ) : null}
+            {vaultPath ? <p className="live-project-path">Vault ready</p> : null}
           </section>
 
           {workspaceState ? (
@@ -329,7 +324,9 @@ export const LiveProjectFlow = forwardRef<LiveProjectFlowHandle, LiveProjectFlow
                 {demoConfig ? "Load synthetic Aurora project" : "Select project artifact folder…"}
               </button>
               {artifactRoot ? (
-                <p className="live-project-path">Folder: {filmDemoMode ? "(synthetic Aurora project)" : artifactRoot}</p>
+                <p className="live-project-path">
+                  {filmDemoMode ? "Synthetic Aurora project selected" : "Project folder selected"}
+                </p>
               ) : null}
               {workspaceState.project ? (
                 <p className="live-project-path">
@@ -352,7 +349,8 @@ export const LiveProjectFlow = forwardRef<LiveProjectFlowHandle, LiveProjectFlow
             <section className="finding-rail-section live-project-panel">
               <h3>4. Human review — {scoping.source_scope.decisions.length} sources</h3>
               <p className="report-subtitle">
-                Every source needs an explicit human decision. Ambiguous sources are never selected automatically.
+                Every source needs an explicit human decision. Nothing is pre-selected from Codex's own
+                classification, including sources it classified as clearly included or excluded.
               </p>
               <div className="status-list source-review-list">
                 {scoping.source_scope.decisions.map((decision) => {

@@ -13,6 +13,7 @@ from continuity_ai.domain import AuthenticatedUserAttestation, SavedAnalysis
 from continuity_ai.prompts import prompt_snapshots, assert_prompts_clean
 from continuity_ai.bridge import Bridge, encode_response, decode_command
 from continuity_ai.openai_provider import OpenAIReasoningProvider
+from continuity_ai.source_scoping.fake_provider import FakeSourceScopingProvider
 from continuity_ai.conversation import send_message, confirm_analysis_revision
 
 def aurora(tmp_path: Path):
@@ -213,7 +214,10 @@ def _init_and_load(tmp_path: Path, provider=None):
     artifact_root = str(tmp_path / "fixtures/project_aurora/generated/artifacts")
     vault_path = str(tmp_path / "vault.bin")
     selected_provider = provider if provider is not None else DeterministicOfflineReasoningProvider()
-    bridge = Bridge(provider=selected_provider)
+    # This module tests the vertical skeleton's own domain/persistence
+    # contracts, not Source Scoping; the fake provider keeps analyze_project
+    # on the legacy unscoped path these tests were written against.
+    bridge = Bridge(provider=selected_provider, source_scoping_provider=FakeSourceScopingProvider())
     bridge.handle({"command": "initialize_vault", "path": vault_path, "password": "secret", "owner_name": "Paweł"})
     bridge.handle({"command": "load_project", "artifact_root": artifact_root})
     return bridge, vault_path, artifact_root
@@ -268,7 +272,9 @@ def test_new_bridge_recovers_confirmed_attestation_into_combined_evidence(tmp_pa
     proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
     bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
 
-    recovered = Bridge(DeterministicOfflineReasoningProvider())
+    recovered = Bridge(
+        DeterministicOfflineReasoningProvider(), source_scoping_provider=FakeSourceScopingProvider()
+    )
     unlock_resp = recovered.handle({"command": "unlock_vault", "path": vault_path, "password": "secret"})
     assert unlock_resp["ok"] is True
     load_resp = recovered.handle({"command": "load_project", "artifact_root": artifact_root})
@@ -869,7 +875,7 @@ def test_falsy_injected_provider_is_stored_and_used_exactly(monkeypatch):
 
     injected = _FalsyGenericSentinelProvider('falsy-injected-provider')
     monkeypatch.setenv(CONTINUITY_REASONING_PROVIDER, 'invalid-provider')
-    bridge = Bridge(injected)
+    bridge = Bridge(injected, source_scoping_provider=FakeSourceScopingProvider())
     records, _ = _generic_provider_world()
     bridge.records = records
     bridge.project = 'Generic Test Project'
@@ -957,7 +963,7 @@ def test_openai_selected_bridge_runs_analysis_and_snapshots_provider(monkeypatch
 
     monkeypatch.setenv(selection.CONTINUITY_REASONING_PROVIDER, 'openai')
     monkeypatch.setattr(selection, 'OpenAIReasoningProvider', construct)
-    bridge = Bridge()
+    bridge = Bridge(source_scoping_provider=FakeSourceScopingProvider())
     records, _ = _generic_provider_world()
     bridge.records = records
     bridge.project = 'Generic Test Project'

@@ -8,6 +8,7 @@ from pathlib import Path
 from continuity_ai.aurora_fixture import generate_project_aurora_fixture
 from continuity_ai.bridge import Bridge
 from continuity_ai.reasoning_pipeline import DeterministicOfflineReasoningProvider
+from continuity_ai.source_scoping.fake_provider import FakeSourceScopingProvider
 
 _ARTIFACT_ROOT = "fixtures/project_aurora/generated/artifacts"
 _EVIDENCE_RECORD_FIELDS = {
@@ -19,7 +20,13 @@ def _init_and_load(tmp_path: Path, provider=None):
     generate_project_aurora_fixture(tmp_path)
     artifact_root = str(tmp_path / _ARTIFACT_ROOT)
     vault_path = str(tmp_path / "vault.bin")
-    bridge = Bridge(provider=provider if provider is not None else DeterministicOfflineReasoningProvider())
+    # This module tests project identity/report persistence, not Source
+    # Scoping; the fake provider keeps analyze_project on the legacy
+    # unscoped path these tests were written against.
+    bridge = Bridge(
+        provider=provider if provider is not None else DeterministicOfflineReasoningProvider(),
+        source_scoping_provider=FakeSourceScopingProvider(),
+    )
     bridge.handle({"command": "initialize_vault", "path": vault_path, "password": "secret", "owner_name": "Paweł"})
     bridge.handle({"command": "load_project", "artifact_root": artifact_root})
     return bridge, vault_path, artifact_root

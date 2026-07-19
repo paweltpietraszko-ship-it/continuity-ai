@@ -8,7 +8,8 @@ describe("PresentationState", () => {
   it("maps bootstrap modes to presentation-only labels", () => {
     expect(presentationStateForBootstrap("connecting")).toBe("analysis_in_progress");
     expect(presentationStateForBootstrap("unavailable")).toBe("codex_unavailable");
-    expect(presentationStateForBootstrap("browser_demo")).toBe("report_available");
+    expect(presentationStateForBootstrap("connected")).toBe("report_available");
+    expect(presentationStateForBootstrap("browser_demo")).toBe("browser_demo");
   });
 
   it("renders analysis in progress without claiming backend completion", () => {
@@ -21,6 +22,17 @@ describe("PresentationState", () => {
     render(<PresentationState state="codex_unavailable" />);
     expect(screen.getByText("Local Bridge unavailable")).toBeInTheDocument();
     expect(screen.getByText(/Demonstration report only/i)).toBeInTheDocument();
+  });
+
+  it("gives browser_demo an explicitly different presentation state than connected, never suggesting a local runtime", () => {
+    // A real backend connection must never be presented with the same
+    // label/tone as a browser preview that has no local Bridge at all.
+    expect(presentationStateForBootstrap("connected")).not.toBe(presentationStateForBootstrap("browser_demo"));
+
+    render(<PresentationState state="browser_demo" />);
+    expect(screen.getAllByText(/no local Bridge/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Current report available")).not.toBeInTheDocument();
+    expect(screen.queryByText(/local Bridge connected/i)).not.toBeInTheDocument();
   });
 });
 

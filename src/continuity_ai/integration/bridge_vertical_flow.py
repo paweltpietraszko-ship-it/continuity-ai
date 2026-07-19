@@ -28,7 +28,12 @@ from pathlib import Path
 from typing import Mapping
 
 from continuity_ai.codex_process import workspace_fingerprint
-from continuity_ai.codex_session import CodexOperation, CodexSessionController, JsonSessionStore
+from continuity_ai.codex_session import (
+    CodexOperation,
+    CodexSessionController,
+    JsonSessionStore,
+    SessionPhase,
+)
 from continuity_ai.domain import ReasoningEvidence
 from continuity_ai.errors import ValidationError
 from continuity_ai.evidence import build_spans
@@ -185,6 +190,24 @@ def confirm_and_materialize_approved_workspace(
     state.approved_scope = approved_scope
     state.approved_workspace_root = receipt.destination_root
     return approved_scope
+
+
+def vertical_flow_ready_for_reporting(state: VerticalFlowState) -> bool:
+    """True only when every prerequisite for resuming the real Codex
+    vertical flow's reporting step is satisfied: an active controller
+    session, a materialized approved-only workspace, a retained Codex
+    session ID from the investigation, and the session's own APPROVED
+    phase. Bridge's production `analyze_project` handler uses this to fail
+    closed instead of silently falling back to a local, OpenAI, or
+    deterministic provider when any one of these is missing."""
+    if (
+        state.controller is None
+        or state.controller_session_id is None
+        or state.approved_workspace_root is None
+    ):
+        return False
+    session = state.controller.get_session(state.controller_session_id)
+    return session.codex_session_id is not None and session.phase is SessionPhase.APPROVED
 
 
 def report_on_approved_workspace(

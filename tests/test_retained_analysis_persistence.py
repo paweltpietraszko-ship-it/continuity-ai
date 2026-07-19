@@ -16,6 +16,7 @@ from continuity_ai.bridge import Bridge
 from continuity_ai.domain import ReasoningEvidence, SavedAnalysis
 from continuity_ai.evidence import build_spans, make_snapshot
 from continuity_ai.reasoning_pipeline import DeterministicOfflineReasoningProvider, SUPPORTED_SCHEMA_VERSION, validate_analysis
+from continuity_ai.source_scoping.fake_provider import FakeSourceScopingProvider
 from continuity_ai.retained_analysis import (
     RETAINED_ANALYSIS_INVALID,
     RETAINED_ANALYSIS_NONE,
@@ -37,7 +38,10 @@ def _init_and_load(tmp_path: Path, provider=None):
     artifact_root = str(tmp_path / "fixtures/project_aurora/generated/artifacts")
     vault_path = str(tmp_path / "vault.bin")
     selected_provider = provider if provider is not None else DeterministicOfflineReasoningProvider()
-    bridge = Bridge(provider=selected_provider)
+    # This module tests retained-analysis persistence, not Source Scoping;
+    # the fake provider keeps analyze_project on the legacy unscoped path
+    # these tests were written against.
+    bridge = Bridge(provider=selected_provider, source_scoping_provider=FakeSourceScopingProvider())
     bridge.handle({"command": "initialize_vault", "path": vault_path, "password": "secret", "owner_name": "Paweł"})
     bridge.handle({"command": "load_project", "artifact_root": artifact_root})
     return bridge, vault_path, artifact_root
@@ -625,7 +629,10 @@ def test_cross_vault_leakage_prevented_even_with_equal_evidence(tmp_path: Path):
     setup.initialize("Owner B", "secret-b")
     setup.lock()
 
-    bridge = Bridge(provider=DeterministicOfflineReasoningProvider())
+    bridge = Bridge(
+        provider=DeterministicOfflineReasoningProvider(),
+        source_scoping_provider=FakeSourceScopingProvider(),
+    )
     bridge.handle({"command": "initialize_vault", "path": vault_a_path, "password": "secret-a", "owner_name": "Owner A"})
     bridge.handle({"command": "load_project", "artifact_root": artifact_root_a})
     assert bridge.handle({"command": "analyze_project", "question": "vault a question"})["ok"] is True

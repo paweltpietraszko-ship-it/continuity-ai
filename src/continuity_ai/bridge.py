@@ -6,7 +6,13 @@ from dataclasses import fields, is_dataclass
 from continuity_ai import conversation
 from continuity_ai.analysis_revision import build_analysis_revision_context_binding
 from continuity_ai.domain import AnalysisRevisionProposal, AuthenticatedUserAttestation, SavedAnalysis
-from continuity_ai.errors import PublicError, ProjectMismatchError, ValidationError, VaultLockedError
+from continuity_ai.errors import (
+    PublicError,
+    ProjectMismatchError,
+    SourceScopingRequiredError,
+    ValidationError,
+    VaultLockedError,
+)
 from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, content_sha256, hydrate_citations, hydrate_snapshot_citations, snapshot_citation_statuses
 from continuity_ai.ingestion import ingest_artifacts, read_project_name
 from continuity_ai.integration.bridge_vertical_flow import (
@@ -16,6 +22,7 @@ from continuity_ai.integration.bridge_vertical_flow import (
     confirm_and_materialize_approved_workspace,
     report_on_approved_workspace,
     start_real_scoping_investigation,
+    vertical_flow_ready_for_reporting,
 )
 from continuity_ai.provider_selection import create_reasoning_provider
 from continuity_ai.reasoning_pipeline import run_analysis
@@ -233,13 +240,20 @@ class Bridge:
             question = cmd.get("question", "")
             if not isinstance(question, str) or not question.strip():
                 raise ValidationError()
-            if (
-                self._vertical.controller is not None
-                and self._vertical.approved_workspace_root is not None
-            ):
-                # The same retained Codex session is resumed on the approved-
-                # only workspace; no local provider, OpenAI, or fake fallback
-                # is ever consulted for this report.
+            if self.source_scoping.provider is None:
+                # Production path -- including every real bridge_main.py
+                # process, which never injects a source_scoping_provider:
+                # analyze_project must always resume a completed real Codex
+                # vertical flow (investigation -> human review ->
+                # confirm_source_scope -> approved-only workspace). Any
+                # missing prerequisite fails closed here; no local, OpenAI,
+                # or deterministic provider is ever consulted as a
+                # substitute. The legacy `run_analysis` path below is
+                # reachable only by explicitly constructing
+                # `Bridge(source_scoping_provider=...)` in-process, which
+                # bridge_main.py never does.
+                if not vertical_flow_ready_for_reporting(self._vertical):
+                    raise SourceScopingRequiredError()
                 result, spans, snapshot = report_on_approved_workspace(
                     self._vertical, records, question
                 )
