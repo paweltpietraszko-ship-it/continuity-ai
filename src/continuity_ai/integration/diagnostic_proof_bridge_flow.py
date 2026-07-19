@@ -19,6 +19,18 @@ referenced here at all -- only the frozen core's own already-oracle-blind
 outputs (`CompletedDiagnosticRun`, `DiagnosticProofReport`) are read, and
 even those are filtered field-by-field before crossing into a Bridge
 response.
+
+Thread lifecycle: each scoping attempt gets its own `_EngineRun`, its own
+attempt-numbered session-store directory, and its own approved-workspace
+destination -- never shared with any other attempt, live or dead. A
+background attempt is only ever abandoned by first setting its `cancelled`
+event (which the review callback polls and honors even if it only reaches
+that callback after the coordinator already gave up) and then performing a
+bounded `thread.join`. State (`controller`, `_run`, the temp workspace
+root) is only released once that join actually confirms the thread has
+exited; if it has not, the run is parked as `_pending_run` and no new
+attempt -- and no `reset()`-driven deletion of the temp root -- is allowed
+until a later call confirms it has finished.
 """
 from __future__ import annotations
 
@@ -27,6 +39,7 @@ import secrets
 import shutil
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -51,9 +64,17 @@ CONTROLLER_STORE_FILENAME = ".continuity_diagnostic_sessions.json"
 
 # Codex operations (investigation, reporting) use the same bound already
 # used elsewhere in the vertical flow. The human-review wait is bounded
-# separately and generously, since it is genuinely waiting on a person.
+# separately and generously, since it is genuinely waiting on a person. The
+# outer bound gives the underlying CodexCliProcessAdapter room to run its
+# own timeout-driven process kill first, in the normal case, before this
+# coordinator's own fail-closed backstop ever fires. The join bound is how
+# long a cancelled attempt's thread gets to actually exit before it is
+# parked as a still-live pending run instead of released.
 _CODEX_TIMEOUT_SECONDS = 300.0
 _REVIEW_WAIT_SECONDS = 1800.0
+_OUTER_TIMEOUT_SECONDS = _CODEX_TIMEOUT_SECONDS + 30
+_JOIN_TIMEOUT_SECONDS = 15.0
+_CANCEL_POLL_SECONDS = 0.5
 
 # Claim fields that the frozen core's own dataclasses legitimately compute
 # from real local content (the unseen-workspace seed, a real filesystem
@@ -67,6 +88,32 @@ _REDACTED_CLAIM_OBSERVED = {
 }
 
 
+@dataclass
+class _EngineRun:
+    """One background-thread execution of `run_diagnostic_engine`, split at
+    its synchronous `review` callback so a real Bridge command round trip
+    can sit between investigation and confirmation. Every attempt gets its
+    own instance -- queues, events, and thread are never reused or shared
+    across attempts, so a stale attempt's late message has nowhere to land
+    that anything still reads."""
+
+    attempt_id: int
+    to_ui: "queue.Queue[tuple[str, object]]" = field(default_factory=lambda: queue.Queue(maxsize=1))
+    to_engine: "queue.Queue[Mapping[str, str]]" = field(default_factory=lambda: queue.Queue(maxsize=1))
+    thread: threading.Thread | None = None
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    finished: threading.Event = field(default_factory=threading.Event)
+
+    def publish(self, kind: str, payload: object) -> None:
+        """Best-effort handoff to the coordinator: if nobody is listening
+        any more (the coordinator already gave up on this attempt), this
+        gives up too rather than blocking forever on a full queue."""
+        try:
+            self.to_ui.put((kind, payload), timeout=5.0)
+        except queue.Full:
+            pass
+
+
 class DiagnosticFlowState:
     """In-memory-only, per-Bridge-process diagnostic session. Never
     persisted; a fresh Bridge (including a restarted `bridge_main.py`
@@ -75,13 +122,29 @@ class DiagnosticFlowState:
     a new workspace is prepared again."""
 
     def __init__(self) -> None:
+        self._pending_run: _EngineRun | None = None
+        self._attempt_counter = 0
+        self._temp_root: Path | None = None
         self.reset()
 
     def reset(self) -> None:
-        if getattr(self, "_temp_root", None) is not None:
-            shutil.rmtree(self._temp_root, ignore_errors=True)
+        _cancel_and_join(getattr(self, "_run", None))
+        pending = self._pending_run
+        if pending is not None:
+            _cancel_and_join(pending)
+            if not _run_alive(pending):
+                self._pending_run = None
+
+        temp_root = self._temp_root
+        run_still_live = _run_alive(getattr(self, "_run", None)) or _run_alive(self._pending_run)
+        if temp_root is not None and not run_still_live:
+            shutil.rmtree(temp_root, ignore_errors=True)
+            self._temp_root = None
+        # If a run is still live despite the bounded join above, the temp
+        # root is deliberately left in place -- it is only ever released by
+        # a later reset()/prepare() call once that run is confirmed dead.
+
         self.phase: str = "idle"
-        self._temp_root: Path | None = None
         self.workspace: DiagnosticWorkspace | None = None
         self.controller: CodexSessionController | None = None
         self.controller_session_id: str | None = None
@@ -93,15 +156,33 @@ class DiagnosticFlowState:
         self._run: _EngineRun | None = None
 
 
-@dataclass
-class _EngineRun:
-    """One background-thread execution of `run_diagnostic_engine`, split at
-    its synchronous `review` callback so a real Bridge command round trip
-    can sit between investigation and confirmation."""
+def _run_alive(run: _EngineRun | None) -> bool:
+    return run is not None and run.thread is not None and run.thread.is_alive()
 
-    to_ui: "queue.Queue[tuple[str, object]]" = field(default_factory=lambda: queue.Queue(maxsize=1))
-    to_engine: "queue.Queue[Mapping[str, str]]" = field(default_factory=lambda: queue.Queue(maxsize=1))
-    thread: threading.Thread | None = None
+
+def _cancel_and_join(run: _EngineRun | None) -> None:
+    """Signal cancellation and wait, bounded, for the attempt's thread to
+    actually exit. The review callback polls `cancelled` and fails closed
+    as soon as it notices -- including if it only reaches that check after
+    this call already returned, since `cancelled` stays set."""
+    if run is None or run.thread is None:
+        return
+    run.cancelled.set()
+    if run.thread.is_alive():
+        run.thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
+
+
+def _reap_pending_run(state: DiagnosticFlowState) -> None:
+    """Re-check a previously-parked still-live attempt. Clears it once its
+    thread is confirmed to have actually exited; otherwise leaves it in
+    place so the caller can keep failing closed."""
+    pending = state._pending_run
+    if pending is None:
+        return
+    if pending.thread is not None and pending.thread.is_alive():
+        pending.thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
+    if not _run_alive(pending):
+        state._pending_run = None
 
 
 def start_diagnostic_workspace(state: DiagnosticFlowState) -> str:
@@ -122,6 +203,7 @@ def start_diagnostic_workspace(state: DiagnosticFlowState) -> str:
         raise ValidationError()
 
     state._temp_root = temp_root
+    state._attempt_counter = 0
     state.workspace = workspace
     state.phase = "workspace_ready"
     return workspace.generated_input_fingerprint[:12]
@@ -129,27 +211,51 @@ def start_diagnostic_workspace(state: DiagnosticFlowState) -> str:
 
 def start_diagnostic_scoping(state: DiagnosticFlowState) -> dict[str, Any]:
     """Phase workspace_ready -> awaiting_review. Creates a real Codex
-    controller session and runs the frozen engine's investigation step on a
+    controller session, in its own attempt-numbered session-store
+    directory, and runs the frozen engine's investigation step on a
     background thread, blocking this call only until the engine reaches its
     `review` callback (i.e. until Codex's own classification is ready), not
-    until the whole engine completes."""
+    until the whole engine completes.
+
+    Refuses to start a new attempt while a previous one has not been
+    confirmed to have actually finished -- this is a real, explicit retry
+    the caller must click again, never a hidden loop, and two attempts
+    never run concurrently."""
 
     if state.phase != "workspace_ready" or state.workspace is None or state._temp_root is None:
         raise ValidationError()
 
+    _reap_pending_run(state)
+    if state._pending_run is not None:
+        raise ValidationError()
+
+    state._attempt_counter += 1
+    attempt_id = state._attempt_counter
+    attempt_dir = state._temp_root / f"attempt-{attempt_id}"
+    attempt_dir.mkdir(parents=True, exist_ok=False)
+    approved_root = state._temp_root / f"approved-{attempt_id}"
+
     controller = CodexSessionController.with_local_codex(
-        JsonSessionStore(state._temp_root / CONTROLLER_STORE_FILENAME)
+        JsonSessionStore(attempt_dir / CONTROLLER_STORE_FILENAME)
     )
-    run = _EngineRun()
+    run = _EngineRun(attempt_id=attempt_id)
     workspace = state.workspace
-    approved_root = state._temp_root / "approved"
 
     def _review(scoping_result: SourceScopingResult) -> Mapping[str, str]:
-        run.to_ui.put(("review", scoping_result))
-        try:
-            return run.to_engine.get(timeout=_REVIEW_WAIT_SECONDS)
-        except queue.Empty as exc:
-            raise TimeoutError("Diagnostic human review was never submitted.") from exc
+        if run.cancelled.is_set():
+            raise TimeoutError("Diagnostic engine attempt was cancelled.")
+        run.publish("review", scoping_result)
+        deadline = time.monotonic() + _REVIEW_WAIT_SECONDS
+        while True:
+            if run.cancelled.is_set():
+                raise TimeoutError("Diagnostic engine attempt was cancelled.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Diagnostic human review was never submitted.")
+            try:
+                return run.to_engine.get(timeout=min(remaining, _CANCEL_POLL_SECONDS))
+            except queue.Empty:
+                continue
 
     def _run_engine() -> None:
         try:
@@ -160,9 +266,11 @@ def start_diagnostic_scoping(state: DiagnosticFlowState) -> dict[str, Any]:
                 _review,
                 timeout_seconds=_CODEX_TIMEOUT_SECONDS,
             )
-            run.to_ui.put(("done", completed))
+            run.publish("done", completed)
         except Exception as exc:  # noqa: BLE001 - fail-closed handoff, never re-raised here
-            run.to_ui.put(("error", exc))
+            run.publish("error", exc)
+        finally:
+            run.finished.set()
 
     thread = threading.Thread(target=_run_engine, daemon=True)
     run.thread = thread
@@ -171,13 +279,13 @@ def start_diagnostic_scoping(state: DiagnosticFlowState) -> dict[str, Any]:
     thread.start()
 
     try:
-        kind, payload = run.to_ui.get(timeout=_CODEX_TIMEOUT_SECONDS + 30)
+        kind, payload = run.to_ui.get(timeout=_OUTER_TIMEOUT_SECONDS)
     except queue.Empty:
-        _discard_failed_scoping_attempt(state)
+        _settle_failed_attempt(state, run)
         raise ProviderError()
 
     if kind != "review":
-        _discard_failed_scoping_attempt(state)
+        _settle_failed_attempt(state, run)
         raise ProviderError()
 
     scoping_result = payload
@@ -187,18 +295,24 @@ def start_diagnostic_scoping(state: DiagnosticFlowState) -> dict[str, Any]:
     return _render_decisions(scoping_result)
 
 
-def _discard_failed_scoping_attempt(state: DiagnosticFlowState) -> None:
-    """A semantic/provider rejection during `diagnostic_run_scoping` (a real,
-    honest Codex failure -- flaky real-model output, not a bug) discards only
-    the failed controller/thread. The already-prepared, oracle-free workspace
-    is deliberately kept exactly as-is (same fingerprint, same standalone
-    input) so the user can explicitly click "Run real Codex Source Scoping
-    investigation" again -- a genuine new real Codex call, never a hidden
-    retry loop or a fallback to any local/OpenAI/deterministic provider."""
+def _settle_failed_attempt(state: DiagnosticFlowState, run: _EngineRun) -> None:
+    """A semantic/provider rejection, a process failure, or an outer
+    timeout during `diagnostic_run_scoping` -- a real, honest Codex failure,
+    not a bug -- always signals cancellation and performs a bounded join
+    before releasing anything. The already-prepared, oracle-free workspace
+    (`state._temp_root`/`state.workspace`) is never touched here: it stays
+    exactly as-is so the user can explicitly click "Run real Codex Source
+    Scoping investigation" again -- a genuine new real Codex call, never a
+    hidden retry loop or a fallback to any local/OpenAI/deterministic
+    provider. If the thread has not actually exited by the time the bounded
+    join returns, it is parked as the pending run and no new attempt is
+    allowed until it is confirmed to have finished."""
+    _cancel_and_join(run)
     state.controller = None
     state._run = None
     state.scoping_result = None
     state.phase = "workspace_ready"
+    state._pending_run = run if _run_alive(run) else None
 
 
 def confirm_diagnostic_scope(
@@ -250,7 +364,7 @@ def confirm_diagnostic_scope(
     run = state._run
     run.to_engine.put(engine_overrides)
     try:
-        kind, payload = run.to_ui.get(timeout=_CODEX_TIMEOUT_SECONDS + 30)
+        kind, payload = run.to_ui.get(timeout=_OUTER_TIMEOUT_SECONDS)
     except queue.Empty:
         state.reset()
         raise ProviderError()
