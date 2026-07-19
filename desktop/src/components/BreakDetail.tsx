@@ -84,17 +84,13 @@ export function BreakDetail({ evidence, attestations, onBack, onOpenEvidence, on
           </article>
 
           <aside className="detail-side">
-            <section className="side-section prominent">
-              <h3>Continuity break</h3>
-              <p>The approved location change is reflected in the budget but not in the production calendar or current call sheet.</p>
-            </section>
             <section className="side-section subdued">
-              <h3>Sources</h3>
+              <h3>Supporting sources</h3>
               <div className="citation-list">
-                <button className="citation" type="button" onClick={() => onOpenEvidence("EV-AUR-001")}>Investor approval</button>
-                <button className="citation" type="button" onClick={() => onOpenEvidence("EV-AUR-003")}>Budget v4</button>
-                <button className="citation" type="button" onClick={() => onOpenEvidence("EV-AUR-002")}>Calendar</button>
-                <button className="citation" type="button" onClick={() => onOpenEvidence("EV-AUR-004")}>Call sheet</button>
+                <button className="citation" type="button" onClick={() => onOpenEvidence("EV-AUR-001")}>EV-AUR-001</button>
+                <button className="citation" type="button" onClick={() => onOpenEvidence("EV-AUR-003")}>EV-AUR-003</button>
+                <button className="citation" type="button" onClick={() => onOpenEvidence("EV-AUR-002")}>EV-AUR-002</button>
+                <button className="citation" type="button" onClick={() => onOpenEvidence("EV-AUR-004")}>EV-AUR-004</button>
               </div>
             </section>
             <section className="side-section subdued">
@@ -102,7 +98,7 @@ export function BreakDetail({ evidence, attestations, onBack, onOpenEvidence, on
               <p>Crew briefing tomorrow.</p>
             </section>
             <section className="side-section prominent">
-              <h3>Next action</h3>
+              <h3>What should happen next</h3>
               <p>Update the production calendar and call sheet before tomorrow’s crew briefing.</p>
               <div className="human-required">Human action required</div>
             </section>

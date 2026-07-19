@@ -219,3 +219,6 @@ __marimo__/
 
 # Generated Project Aurora fixture outputs are reproducible and not committed.
 fixtures/project_aurora/generated/
+
+# TypeScript incremental build info
+*.tsbuildinfo

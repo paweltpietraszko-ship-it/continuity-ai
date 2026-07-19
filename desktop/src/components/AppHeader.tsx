@@ -23,6 +23,8 @@ function viewLabel(view: ViewName): string {
 }
 
 export function AppHeader({ project, view, vaultUnlocked, bootstrap, onOpenWorkspace, onLockVault }: AppHeaderProps) {
+  const showAuroraBadge = project === "aurora" && view !== "workspace";
+
   return (
     <header className="topbar">
       <div className="brand">
@@ -41,7 +43,11 @@ export function AppHeader({ project, view, vaultUnlocked, bootstrap, onOpenWorks
         ) : null}
         <strong>{view === "workspace" ? "Workspace" : projectLabel(project)}</strong>
         <span>{viewLabel(view)}</span>
-        <span className="demo-banner">Demonstration workspace · Synthetic production data</span>
+        {showAuroraBadge ? (
+          <span className="demo-banner">Synthetic demo project</span>
+        ) : (
+          <span className="demo-banner subtle">Demonstration workspace</span>
+        )}
       </div>
 
       <div className="owner">

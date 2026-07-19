@@ -2,7 +2,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { App, AppRoot } from "./App";
+import { App } from "./App";
+import { AppRoot } from "./AppRoot";
 import type { BridgeBootstrapState } from "./bridge/bootstrap";
 import type { WorkspaceState } from "./bridge/contracts";
 
@@ -61,8 +62,8 @@ describe("Continuity AI desktop shell", () => {
     await user.click(screen.getByRole("button", { name: "Review continuity break" }));
     expect(screen.getByRole("heading", { name: "Decision propagation" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Investor approval" }));
-    expect(screen.getByRole("complementary", { name: "Verified sources" })).toHaveAttribute("aria-hidden", "false");
+    await user.click(screen.getByRole("button", { name: /Investor approval/i }));
+    expect(screen.getByRole("complementary", { name: "Evidence inspector" })).toHaveAttribute("aria-hidden", "false");
     const source = screen.getByRole("heading", { name: "Investor approval for Northlight Studio move" }).closest("article");
     expect(source).toHaveTextContent("EV-AUR-001");
     expect(source).toHaveTextContent(/Mara Chen formally approves moving/);

@@ -15,14 +15,14 @@ export function Workspace({ onOpenProject }: WorkspaceProps) {
             <h1>Workspace</h1>
             <p className="report-subtitle">Open a reconstructed project report. Each report distinguishes confirmed state, continuity issues, and evidence gaps.</p>
           </div>
-          <div className="workspace-note">Demonstration workspace · Synthetic production data</div>
+          <div className="workspace-note">Demonstration workspace · preview data only</div>
         </div>
 
         <div className="project-list" role="group" aria-label="Projects">
           <button className="project-row featured" type="button" onClick={() => onOpenProject("aurora")}>
             <div className="project-status-mark" aria-hidden="true" />
             <div className="project-main">
-              <div className="project-meta"><span>5 verified sources</span><span>Updated today</span></div>
+              <div className="project-meta"><span>5 source records</span><span>Synthetic demo project</span></div>
               <h2>Project Aurora</h2>
               <p>Pre-production report with one time-sensitive continuity break.</p>
             </div>

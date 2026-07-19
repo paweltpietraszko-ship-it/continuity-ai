@@ -40,7 +40,7 @@ export function GenericReport({ report, onOpenSources }: GenericReportProps) {
               {report.mode === "on-track" ? (
                 <>
                   <div className="mini-item"><strong>Decision path aligned</strong><span>Approvals and operating documents support the same current state.</span></div>
-                  <div className="mini-item"><strong>No manual correction required</strong><span>The report contains no grounded continuity break.</span></div>
+                  <div className="mini-item"><strong>No manual correction required</strong><span>The report contains no continuity break requiring intervention.</span></div>
                 </>
               ) : (
                 <>

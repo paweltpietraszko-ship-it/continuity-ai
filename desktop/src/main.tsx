@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
-import { AppRoot } from "./App";
+import { AppRoot } from "./AppRoot";
 import { bootstrapBridge } from "./bridge/bootstrap";
 import "./styles/app.css";
 
