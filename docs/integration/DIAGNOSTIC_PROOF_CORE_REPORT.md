@@ -8,7 +8,7 @@ Base: `ff1ca167986596d7676e971cd680bd5d43ee6277`
 
 The public flow has three explicit phases:
 
-1. `prepare_diagnostic_workspace(run_root, seed)` delegates deterministic generation to `generate_unseen_workspace` and returns physically separate `input/` and `oracle/` roots.
+1. `prepare_diagnostic_workspace(run_root, seed)` delegates deterministic generation to `generate_unseen_workspace` under controller-only `evaluation/input` and `evaluation/oracle` roots, then copies only the generated input into a standalone `engine/input` outside the evaluation tree. `engine/oracle` does not exist.
 2. `run_diagnostic_engine(controller, input_root, approved_workspace_root, review)` accepts only the standalone engine input root. It loads its closed layout and calls, in order, the existing production functions `start_mixed_workspace_investigation`, `record_scope_awaiting_review`, `approve_source_scope`, `materialize_approved_scope`, and `bind_and_report_on_approved_workspace`.
 3. `evaluate_completed_diagnostic_run(completed, oracle_root)` is a separate post-completion boundary. Only this phase accepts the oracle root and delegates hidden-status evaluation to `evaluate_generated_run`.
 
@@ -30,7 +30,8 @@ Diagnostic claims add lifecycle and filesystem evidence to the existing oracle c
 | Claim | Evidence |
 |---|---|
 | `INPUT_FINGERPRINT_UNCHANGED` | Recomputed standalone input fingerprint equals the pre-investigation fingerprint. |
-| `ENGINE_INPUT_ORACLE_ROOT_ISOLATION` | Input and oracle are distinct, non-nested sibling roots. |
+| `ENGINE_INPUT_PHYSICALLY_ISOLATED_FROM_ORACLE` | Standalone engine input is outside the evaluation tree and no `../oracle` exists from `engine/input`. |
+| `ENGINE_INPUT_MATCHES_GENERATED_INPUT` | The evaluator recomputes both fingerprints and proves the standalone engine input matches controller-only `evaluation/input`. |
 | `SAME_CODEX_SESSION_ID` | Investigation and approved-workspace reporting retain the identical Codex ID. |
 | `APPROVED_WORKSPACE_FINGERPRINT_MATCH` | Recomputed approved-workspace fingerprint equals the materialization receipt. |
 | `APPROVED_WORKSPACE_EXACT_PARTITION` | The manifest is unique and equal to the approved evidence set; physical artifact paths and hashes match it exactly. |
@@ -49,7 +50,8 @@ Tests under `tests/diagnostic_proof/` cover:
 
 - complete passing flows for three unrelated seeds;
 - absence of fixture project names in production diagnostic logic;
-- no oracle content or nesting inside the engine input root;
+- standalone engine input outside the controller-only evaluation tree, with no adjacent oracle;
+- evaluator detection of any divergence between generated and standalone input;
 - exact automatic decision partition;
 - physical absence of excluded artifacts from the approved workspace;
 - one retained Codex ID across investigation and reporting;
@@ -63,14 +65,17 @@ Tests under `tests/diagnostic_proof/` cover:
 The final validation commands and results are recorded here after the implementation run:
 
 ```text
+uv run pytest -q tests/diagnostic_proof
+10 passed, 1 deselected in 2.64s
+
 uv run pytest -q
-571 passed, 5 skipped, 4 deselected in 56.21s
+572 passed, 5 skipped, 4 deselected in 107.03s
 
 uv run pytest --force-enable-socket -m live_network \
   tests/diagnostic_proof/test_diagnostic_proof_live.py \
   tests/test_codex_session_live.py \
   tests/integration/test_mixed_to_approved_vertical_flow.py -q
-4 passed, 5 deselected in 144.84s
+4 passed, 5 deselected in 139.58s
 
 uv run python -m compileall -q src tests
 PASS

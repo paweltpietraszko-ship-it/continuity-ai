@@ -173,15 +173,23 @@ def test_multiple_seeds_produce_complete_passing_proofs(tmp_path: Path, seed: in
     assert claims["APPROVED_WORKSPACE_EXACT_PARTITION"] is ProofStatus.PASS
     assert claims["EXCLUDED_OUTSIDE_APPROVED_WORKSPACE"] is ProofStatus.PASS
     assert claims["SAME_CODEX_SESSION_ID"] is ProofStatus.PASS
+    assert claims["ENGINE_INPUT_PHYSICALLY_ISOLATED_FROM_ORACLE"] is ProofStatus.PASS
+    assert claims["ENGINE_INPUT_MATCHES_GENERATED_INPUT"] is ProofStatus.PASS
 
 
 def test_oracle_is_not_present_or_nested_in_engine_root(tmp_path: Path) -> None:
     workspace = prepare_diagnostic_workspace(tmp_path / "generated", 101)
 
-    assert workspace.input_root.parent == workspace.oracle_root.parent
+    assert workspace.generated_input_root.parent == workspace.oracle_root.parent
+    assert workspace.generated_input_root.parent == workspace.evaluation_root
+    assert workspace.input_root.parent == workspace.engine_root
+    assert not workspace.input_root.is_relative_to(workspace.evaluation_root)
+    assert not workspace.evaluation_root.is_relative_to(workspace.input_root)
     assert workspace.input_root != workspace.oracle_root
     assert not workspace.oracle_root.is_relative_to(workspace.input_root)
     assert not workspace.input_root.is_relative_to(workspace.oracle_root)
+    assert not (workspace.input_root.parent / "oracle").exists()
+    assert not (workspace.input_root / "../oracle").exists()
     assert {path.name for path in workspace.input_root.iterdir()} == {
         "workspace.json",
         "records",
@@ -236,7 +244,23 @@ def test_same_seed_has_identical_standalone_input(tmp_path: Path) -> None:
         }
 
     assert snapshot(first.input_root) == snapshot(second.input_root)
+    assert snapshot(first.input_root) == snapshot(first.generated_input_root)
+    assert snapshot(second.input_root) == snapshot(second.generated_input_root)
     assert workspace_fingerprint(first.input_root) == workspace_fingerprint(second.input_root)
+
+
+def test_evaluator_detects_engine_input_diverging_from_generated_input(
+    tmp_path: Path,
+) -> None:
+    workspace, _, completed = _run(tmp_path, 405)
+    generated_record = next((workspace.generated_input_root / "records").iterdir())
+    generated_record.write_bytes(generated_record.read_bytes() + b"\nCONTROLLER-ONLY-TAMPER\n")
+
+    report = evaluate_completed_diagnostic_run(completed, workspace.oracle_root)
+
+    claims = {claim.name: claim.status for claim in report.claims}
+    assert report.result is ProofStatus.FAIL
+    assert claims["ENGINE_INPUT_MATCHES_GENERATED_INPUT"] is ProofStatus.FAIL
 
 
 def test_json_and_markdown_record_required_identity_and_claims(tmp_path: Path) -> None:

@@ -45,18 +45,27 @@ def evaluate_completed_diagnostic_run(
         raise DiagnosticEvaluationError("A completed diagnostic run is required.")
     oracle = Path(oracle_root).resolve(strict=True)
     input_root = completed.input_root.resolve(strict=True)
+    evaluation_root = oracle.parent.resolve(strict=True)
+    generated_input_root = (evaluation_root / "input").resolve(strict=True)
     if (
         oracle.name != "oracle"
         or input_root.name != "input"
-        or oracle.parent != input_root.parent
+        or generated_input_root.name != "input"
+        or generated_input_root.parent != oracle.parent
         or oracle == input_root
         or oracle.is_relative_to(input_root)
         or input_root.is_relative_to(oracle)
+        or input_root.is_relative_to(evaluation_root)
+        or evaluation_root.is_relative_to(input_root)
+        or (input_root.parent / "oracle").exists()
+        or is_unsafe_link(input_root.parent / "oracle")
     ):
-        raise DiagnosticEvaluationError("Oracle and engine input roots are not isolated siblings.")
+        raise DiagnosticEvaluationError(
+            "Standalone engine input is not physically isolated from the oracle."
+        )
 
     submission = _classification_submission(completed)
-    oracle_evaluation = evaluate_generated_run(oracle.parent, submission)
+    oracle_evaluation = evaluate_generated_run(evaluation_root, submission)
     metadata = load_run_metadata(oracle / "metadata.json")
     diagnostic_claims = _diagnostic_claims(completed, oracle)
     oracle_claims = tuple(
@@ -190,6 +199,8 @@ def _classification_submission(completed: CompletedDiagnosticRun) -> Classificat
 def _diagnostic_claims(
     completed: CompletedDiagnosticRun, oracle_root: Path
 ) -> tuple[DiagnosticClaim, ...]:
+    evaluation_root = oracle_root.parent
+    generated_input_root = evaluation_root / "input"
     try:
         input_unchanged = (
             workspace_fingerprint(completed.input_root) == completed.input_fingerprint
@@ -223,14 +234,24 @@ def _diagnostic_claims(
         len(observed_report_paths) == len(set(observed_report_paths))
         and tuple(sorted(observed_report_paths)) == expected_report_paths
     )
+    engine_input_parent_oracle = completed.input_root.parent / "oracle"
     isolated = (
-        oracle_root != completed.input_root
-        and not oracle_root.is_relative_to(completed.input_root)
-        and not completed.input_root.is_relative_to(oracle_root)
+        not completed.input_root.is_relative_to(evaluation_root)
+        and not evaluation_root.is_relative_to(completed.input_root)
+        and not engine_input_parent_oracle.exists()
+        and not is_unsafe_link(engine_input_parent_oracle)
     )
+    try:
+        input_matches_generated = (
+            workspace_fingerprint(completed.input_root)
+            == workspace_fingerprint(generated_input_root)
+        )
+    except Exception:
+        input_matches_generated = False
     return (
         _claim("INPUT_FINGERPRINT_UNCHANGED", input_unchanged, completed.input_fingerprint, "unchanged"),
-        _claim("ENGINE_INPUT_ORACLE_ROOT_ISOLATION", isolated, str(oracle_root), "physically separate from engine input root"),
+        _claim("ENGINE_INPUT_PHYSICALLY_ISOLATED_FROM_ORACLE", isolated, str(completed.input_root), "outside evaluation root with no ../oracle"),
+        _claim("ENGINE_INPUT_MATCHES_GENERATED_INPUT", input_matches_generated, str(input_matches_generated).lower(), "true"),
         _claim("SAME_CODEX_SESSION_ID", same_codex, completed.reporting_codex_session_id, completed.investigation_codex_session_id),
         _claim("APPROVED_WORKSPACE_FINGERPRINT_MATCH", approved_fingerprint_ok, str(approved_fingerprint_ok).lower(), "true"),
         _claim("APPROVED_WORKSPACE_EXACT_PARTITION", exact_partition, ", ".join(manifest_ids), ", ".join(approved_ids)),
