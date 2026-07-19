@@ -110,6 +110,21 @@ export interface SemanticAnnotation {
   readonly context_tags: readonly "urgency"[];
 }
 
+/**
+ * Safe, non-secret run-observability metadata read from the Codex
+ * controller's own retained session state. Never a local path, prompt,
+ * stderr, password, evidence/oracle content, or internal exception:
+ * `codex_session_id`/`controller_session_id` are opaque UUIDs, and both
+ * fingerprints are SHA-256 hex digests of workspace content, not paths.
+ */
+export interface RunIdentity {
+  readonly controller_session_id: string;
+  readonly codex_session_id: string | null;
+  readonly mixed_workspace_fingerprint: string;
+  readonly approved_workspace_fingerprint: string | null;
+  readonly reporting_resumed_retained_session: boolean;
+}
+
 export interface CitationCard {
   readonly evidence_id: string;
   readonly span_id: string;
@@ -143,6 +158,7 @@ export interface AnalysisData extends AnalysisProjection {
   readonly created_at: string;
   readonly prompt_version: "g03_reasoning_v3";
   readonly provider_id: string;
+  readonly run_identity?: RunIdentity;
 }
 
 export type SourceAssociationStatus = "included" | "excluded" | "ambiguous";
@@ -202,6 +218,7 @@ export interface ScopeProjectSourcesData {
   readonly project: string;
   readonly source_scope: SourceScopingResult;
   readonly citation_cards: readonly CitationCard[];
+  readonly run_identity?: RunIdentity;
 }
 
 export interface ConfirmSourceScopeData {
@@ -209,6 +226,7 @@ export interface ConfirmSourceScopeData {
   readonly evidence_count: number;
   readonly approved_source_scope: ApprovedSourceScope;
   readonly persisted: boolean;
+  readonly run_identity?: RunIdentity;
 }
 
 export interface WorkspaceStateBase {

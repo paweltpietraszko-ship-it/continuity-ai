@@ -24,6 +24,16 @@ function statusTone(status: "included" | "excluded" | "ambiguous"): string {
   return "attention";
 }
 
+/**
+ * Truncates an opaque identifier or fingerprint for compact display. Never
+ * pass a local path, prompt, or other free-text value here — this is only
+ * for the fixed-format UUIDs and SHA-256 hex digests in `RunIdentity`.
+ */
+function shortId(value: string | null | undefined): string {
+  if (!value) return "—";
+  return value.length > 12 ? `${value.slice(0, 8)}…` : value;
+}
+
 export function LiveProjectFlow({ onBack }: LiveProjectFlowProps) {
   const [step, setStep] = useState<FlowStep>("setup");
   const [vaultPath, setVaultPath] = useState("");
@@ -130,6 +140,9 @@ export function LiveProjectFlow({ onBack }: LiveProjectFlowProps) {
     });
   }
 
+  const investigationIdentity = scoping?.run_identity ?? null;
+  const reportingIdentity = analysis?.run_identity ?? confirmed?.run_identity ?? null;
+
   let reportDisplay: ReturnType<typeof createProjectReportDisplay> | null = null;
   let reportError: string | null = null;
   if (analysis) {
@@ -176,6 +189,34 @@ export function LiveProjectFlow({ onBack }: LiveProjectFlowProps) {
           <div className="locked-note" role="alert">
             {error}
           </div>
+        ) : null}
+
+        {investigationIdentity ? (
+          <section className="finding-rail-section live-project-panel" aria-label="Run identity">
+            <h3>Run identity</h3>
+            <dl className="source-facts">
+              <div>
+                <dt>Codex session</dt>
+                <dd>{shortId(investigationIdentity.codex_session_id)}</dd>
+              </div>
+              <div>
+                <dt>Mixed workspace</dt>
+                <dd>{shortId(investigationIdentity.mixed_workspace_fingerprint)}</dd>
+              </div>
+              {reportingIdentity?.reporting_resumed_retained_session ? (
+                <>
+                  <div>
+                    <dt>Same Codex session resumed</dt>
+                    <dd>{shortId(reportingIdentity.codex_session_id)}</dd>
+                  </div>
+                  <div>
+                    <dt>Approved-only workspace</dt>
+                    <dd>{shortId(reportingIdentity.approved_workspace_fingerprint)}</dd>
+                  </div>
+                </>
+              ) : null}
+            </dl>
+          </section>
         ) : null}
 
         <section className="finding-rail-section live-project-panel">

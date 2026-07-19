@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Mapping
 
 from continuity_ai.codex_process import workspace_fingerprint
-from continuity_ai.codex_session import CodexSessionController, JsonSessionStore
+from continuity_ai.codex_session import CodexOperation, CodexSessionController, JsonSessionStore
 from continuity_ai.domain import ReasoningEvidence
 from continuity_ai.errors import ValidationError
 from continuity_ai.evidence import build_spans
@@ -85,6 +85,49 @@ class VerticalFlowState:
         self.scoping_result = None
         self.approved_scope = None
         self.approved_workspace_root = None
+
+
+@dataclass(frozen=True)
+class RunIdentity:
+    """Safe, non-secret run-observability metadata for a competition/demo
+    audience. Every field is read directly from the controller's own
+    retained session and receipt state (never fabricated, never supplied by
+    a caller or the frontend) and none of them can ever contain a local
+    path, prompt, stderr, password, evidence/oracle content, or internal
+    exception -- `codex_session_id`/`controller_session_id` are opaque
+    UUIDs and both fingerprints are SHA-256 hex digests of workspace
+    content, not paths.
+    """
+
+    controller_session_id: str
+    codex_session_id: str | None
+    mixed_workspace_fingerprint: str
+    approved_workspace_fingerprint: str | None
+    reporting_resumed_retained_session: bool
+
+
+def build_run_identity(state: VerticalFlowState) -> RunIdentity | None:
+    """Return `None` when no real controller session is active (including
+    every existing test path that injects an explicit
+    `source_scoping_provider`), so callers can omit this metadata entirely
+    rather than publish a fabricated or empty value."""
+    if state.controller is None or state.controller_session_id is None:
+        return None
+    session = state.controller.get_session(state.controller_session_id)
+    receipt = session.last_successful_invocation_receipt
+    reporting_resumed_retained_session = bool(
+        receipt is not None
+        and receipt.operation_type is CodexOperation.REPORT
+        and receipt.resume_attempted
+        and not receipt.new_codex_session_created
+    )
+    return RunIdentity(
+        controller_session_id=session.controller_session_id,
+        codex_session_id=session.codex_session_id,
+        mixed_workspace_fingerprint=session.workspace_fingerprint,
+        approved_workspace_fingerprint=session.approved_workspace_fingerprint,
+        reporting_resumed_retained_session=reporting_resumed_retained_session,
+    )
 
 
 def start_real_scoping_investigation(

@@ -11,6 +11,7 @@ from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoni
 from continuity_ai.ingestion import ingest_artifacts, read_project_name
 from continuity_ai.integration.bridge_vertical_flow import (
     VerticalFlowState,
+    build_run_identity,
     build_source_registry,
     confirm_and_materialize_approved_workspace,
     report_on_approved_workspace,
@@ -186,7 +187,9 @@ class Bridge:
             else:
                 response = self.source_scoping.classify(self.project, self.artifact_records)
             self._invalidate_analysis()
-            return {"project": self.project, **response}
+            run_identity = build_run_identity(self._vertical)
+            identity_field = {} if run_identity is None else {"run_identity": run_identity}
+            return {"project": self.project, **response, **identity_field}
 
         if name == "confirm_source_scope":
             if self.project is None or not self.artifact_records:
@@ -214,10 +217,13 @@ class Bridge:
                 )
             self._invalidate_analysis()
             self._prepare_downstream_project_evidence()
+            run_identity = build_run_identity(self._vertical)
+            identity_field = {} if run_identity is None else {"run_identity": run_identity}
             return {
                 "project": self.project,
                 "evidence_count": len(self.records),
                 **response,
+                **identity_field,
             }
 
         if name == "analyze_project":
@@ -258,7 +264,15 @@ class Bridge:
             # ephemeral analysis as persisted (F-11).
             self.retained_analysis_status = RETAINED_ANALYSIS_VALID if persisted else RETAINED_ANALYSIS_NONE
             cards = self._hydrate_retained_cards(saved, result)
-            return {"project": self.project, **_analysis_fields(result), "citation_cards": cards, **_snapshot_fields(snapshot)}
+            run_identity = build_run_identity(self._vertical)
+            identity_field = {} if run_identity is None else {"run_identity": run_identity}
+            return {
+                "project": self.project,
+                **_analysis_fields(result),
+                "citation_cards": cards,
+                **_snapshot_fields(snapshot),
+                **identity_field,
+            }
 
         if name == "send_message":
             message = cmd["message"]

@@ -360,3 +360,170 @@ def test_workspace_identity_recognizes_equivalent_windows_path_spellings(
         ),
     )
     assert result.receipt.succeeded is True
+
+
+def _report_response(approved_records) -> str:
+    spans = build_spans(approved_records)
+    return json.dumps(
+        {
+            "schema_version": "3.0",
+            "analysis_status": "no_material_break_found",
+            "continuity_break_kind": None,
+            "current_state": {
+                "statement": "All approved evidence is grounded.",
+                "span_ids": [spans[0].span_id],
+            },
+            "semantic_annotations": [
+                {"evidence_id": r.evidence_id, "propagation_role": "none", "context_tags": []}
+                for r in approved_records
+            ],
+            "continuity_break": None,
+            "next_action": None,
+            "project_report": {
+                "summary": {
+                    "statement": "Nothing material changed.",
+                    "span_ids": [spans[0].span_id],
+                },
+                "sections": [
+                    {
+                        "key": key,
+                        "status": "evidence_gap",
+                        "headline": "No verified status available",
+                        "detail": f"No available project source establishes the current {key} status.",
+                        "span_ids": [],
+                    }
+                    for key in (
+                        "decision", "budget", "schedule", "operations",
+                        "readiness", "casting", "agreements",
+                    )
+                ],
+            },
+        }
+    )
+
+
+def _run_real_flow_to_reporting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Shared setup for the run_identity proofs: real production Bridge,
+    scripted Codex CLI, one deterministic exclusion, all the way through a
+    successful analyze_project."""
+    bridge, artifact_root, records = _init_bridge_and_load(tmp_path)
+    target = bridge.project
+    classification = _classification_response(target, records)
+    excluded_id = records[0].evidence_id
+    approved_records = tuple(r for r in records if r.evidence_id != excluded_id)
+    runner = ScriptedRunner(
+        [classification, _report_response(approved_records)], [THREAD_ID, THREAD_ID]
+    )
+    _patch_local_codex(monkeypatch, runner)
+
+    scoped = bridge.handle({"command": "scope_project_sources"})
+    assert scoped["ok"] is True
+
+    overrides = {r.evidence_id: "included" for r in records}
+    overrides[excluded_id] = "excluded"
+    confirmed = bridge.handle({"command": "confirm_source_scope", "overrides": overrides})
+    assert confirmed["ok"] is True
+
+    analyzed = bridge.handle(
+        {"command": "analyze_project", "question": "What is the current state?"}
+    )
+    assert analyzed["ok"] is True
+
+    return bridge, scoped, confirmed, analyzed
+
+
+def test_run_identity_codex_session_id_matches_between_investigation_and_reporting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge, scoped, confirmed, analyzed = _run_real_flow_to_reporting(tmp_path, monkeypatch)
+
+    investigation_identity = scoped["data"]["run_identity"]
+    reporting_identity = analyzed["data"]["run_identity"]
+
+    assert investigation_identity["codex_session_id"] == THREAD_ID
+    assert reporting_identity["codex_session_id"] == THREAD_ID
+    assert investigation_identity["codex_session_id"] == reporting_identity["codex_session_id"]
+    assert investigation_identity["controller_session_id"] == reporting_identity["controller_session_id"]
+
+    # Not yet claimed as a resumed report right after investigation...
+    assert investigation_identity["reporting_resumed_retained_session"] is False
+    # ...but true once reporting has actually resumed that same session.
+    assert reporting_identity["reporting_resumed_retained_session"] is True
+
+    # Confirmation response also carries the identity (approval/reporting phase).
+    confirmation_identity = confirmed["data"]["run_identity"]
+    assert confirmation_identity["codex_session_id"] == THREAD_ID
+
+
+def test_run_identity_approved_fingerprint_differs_from_mixed_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, scoped, confirmed, analyzed = _run_real_flow_to_reporting(tmp_path, monkeypatch)
+
+    mixed_fingerprint = scoped["data"]["run_identity"]["mixed_workspace_fingerprint"]
+    assert scoped["data"]["run_identity"]["approved_workspace_fingerprint"] is None
+    # Binding happens during confirm_source_scope itself, so the approved
+    # fingerprint is already present in that response, before reporting runs.
+    approved_fingerprint = confirmed["data"]["run_identity"]["approved_workspace_fingerprint"]
+    assert analyzed["data"]["run_identity"]["approved_workspace_fingerprint"] == approved_fingerprint
+
+    assert isinstance(mixed_fingerprint, str) and len(mixed_fingerprint) == 64
+    assert isinstance(approved_fingerprint, str) and len(approved_fingerprint) == 64
+    assert approved_fingerprint != mixed_fingerprint
+    # Mixed workspace fingerprint is stable across the whole flow (unchanged).
+    assert analyzed["data"]["run_identity"]["mixed_workspace_fingerprint"] == mixed_fingerprint
+
+
+def test_run_identity_is_sourced_from_controller_runtime_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The metadata must be a read of the controller's own retained session,
+    not something computed independently by the response-building code."""
+    bridge, scoped, confirmed, analyzed = _run_real_flow_to_reporting(tmp_path, monkeypatch)
+
+    controller_session = bridge._vertical.controller.get_session(
+        bridge._vertical.controller_session_id
+    )
+    identity = analyzed["data"]["run_identity"]
+
+    assert identity["controller_session_id"] == controller_session.controller_session_id
+    assert identity["codex_session_id"] == controller_session.codex_session_id
+    assert identity["mixed_workspace_fingerprint"] == controller_session.workspace_fingerprint
+    assert (
+        identity["approved_workspace_fingerprint"]
+        == controller_session.approved_workspace_fingerprint
+    )
+    receipt = controller_session.last_successful_invocation_receipt
+    assert identity["reporting_resumed_retained_session"] == (
+        receipt is not None
+        and receipt.operation_type.value == "report"
+        and receipt.resume_attempted is True
+        and receipt.new_codex_session_created is False
+    )
+
+
+def test_fake_source_scoping_provider_path_omits_run_identity() -> None:
+    target, records = load_workspace(
+        Path(__file__).parents[2] / "fixtures" / "source_scoping_mixed_workspace"
+    )
+    records = order_evidence(records)
+    bridge = Bridge(provider=_UnusedReasoningProvider(), source_scoping_provider=FakeSourceScopingProvider())
+    bridge.project = target
+    bridge.artifact_records = records
+    bridge.records = records
+    bridge.spans = build_spans(records)
+
+    scoped = bridge.handle({"command": "scope_project_sources"})
+    assert scoped["ok"] is True
+    assert "run_identity" not in scoped["data"]
+    assert bridge._vertical.controller is None
+
+    ambiguous = scoped["data"]["source_scope"]["ambiguous_evidence_ids"]
+    confirmed = bridge.handle(
+        {
+            "command": "confirm_source_scope",
+            "overrides": {evidence_id: "excluded" for evidence_id in ambiguous},
+        }
+    )
+    assert confirmed["ok"] is True
+    assert "run_identity" not in confirmed["data"]
