@@ -11,7 +11,13 @@ from continuity_ai.ingestion import ingest_artifacts, read_project_name
 from continuity_ai.provider_selection import create_reasoning_provider
 from continuity_ai.reasoning_pipeline import run_analysis
 from continuity_ai.retained_analysis import RETAINED_ANALYSIS_NONE, RETAINED_ANALYSIS_VALID, restore_latest
-from continuity_ai.source_scoping.bridge_adapter import STATUS_APPROVED, STATUS_NONE, SourceScopingSession
+from continuity_ai.source_scoping.bridge_adapter import (
+    STATUS_APPROVED,
+    STATUS_INVALID,
+    STATUS_NONE,
+    STATUS_PENDING_REVIEW,
+    SourceScopingSession,
+)
 from continuity_ai.vault import Vault
 
 
@@ -89,9 +95,7 @@ class Bridge:
             if self.vault is None:
                 raise VaultLockedError()
             self.vault.lock()
-            self.source_scoping.reset()
-            self.records = self.artifact_records
-            self.spans = build_spans(self.artifact_records)
+            self._prepare_downstream_project_evidence(after_vault_lock=True)
             self._invalidate_analysis()
             return {"locked": True}
 
@@ -110,14 +114,15 @@ class Bridge:
             self.project = project_name
             self._restore_from_vault(clear_project=False)
             self.source_scoping.restore(project_name, self.artifact_records, self.vault)
-            if self.source_scoping.status == STATUS_APPROVED:
-                self._refresh_evidence()
-                if not self._analysis_matches_live_evidence():
-                    self._invalidate_analysis()
-            elif self.source_scoping.status != STATUS_NONE:
-                # A malformed or stale persisted scope blocks downstream reasoning and
-                # must not leave a retained report visible as if its source set were valid.
+            try:
+                _, _, scoped = self._prepare_downstream_project_evidence()
+            except ValidationError:
+                self.records = ()
+                self.spans = ()
                 self._invalidate_analysis()
+            else:
+                if scoped and not self._analysis_matches_live_evidence():
+                    self._invalidate_analysis()
             return {
                 "project": self.project,
                 "artifact_evidence_count": len(self.artifact_records),
@@ -145,7 +150,7 @@ class Bridge:
                 self.artifact_records, overrides, vault=self.vault
             )
             self._invalidate_analysis()
-            self._refresh_evidence()
+            self._prepare_downstream_project_evidence()
             return {
                 "project": self.project,
                 "evidence_count": len(self.records),
@@ -153,13 +158,13 @@ class Bridge:
             }
 
         if name == "analyze_project":
-            self._prepare_analysis_evidence()
-            if not self.records or self.project is None:
+            records, _, _ = self._prepare_downstream_project_evidence()
+            if not records or self.project is None:
                 raise ValidationError()
             question = cmd.get("question", "")
             if not isinstance(question, str) or not question.strip():
                 raise ValidationError()
-            result, spans, snapshot = run_analysis(self.records, question, self.provider)
+            result, spans, snapshot = run_analysis(records, question, self.provider)
             saved = SavedAnalysis(snapshot.analysis_id, snapshot.created_at, result, snapshot, question, self.project)
             persisted = False
             if self.vault is not None:
@@ -181,8 +186,14 @@ class Bridge:
         if name == "send_message":
             message = cmd["message"]
             revision_candidate = cmd.get("revision_candidate")
+            records, spans, scoped = self._prepare_downstream_project_evidence()
             return conversation.send_message(
-                message, self.records, self.spans, vault=self.vault, revision_candidate=revision_candidate
+                message,
+                records,
+                spans,
+                vault=self.vault,
+                revision_candidate=revision_candidate,
+                project_only=scoped,
             )
 
         if name == "confirm_attestation":
@@ -193,8 +204,8 @@ class Bridge:
                 raise ValidationError()
             proposal_id = cmd["proposal_id"]
             attestation = self.vault.confirm_attestation(proposal_id)
-            self._refresh_evidence()
-            result, spans, snapshot = run_analysis(self.records, self.last_question, self.provider)
+            records, _, _ = self._prepare_downstream_project_evidence()
+            result, spans, snapshot = run_analysis(records, self.last_question, self.provider)
             self.analysis = result
             self.spans = spans
             self.snapshot = snapshot
@@ -209,6 +220,7 @@ class Bridge:
         if name == "confirm_analysis_revision":
             if self.vault is None:
                 raise VaultLockedError()
+            _, _, _ = self._prepare_downstream_project_evidence()
             proposal_id = cmd["proposal_id"]
             result = conversation.confirm_analysis_revision(self.vault, proposal_id)
             self.analysis = result
@@ -252,15 +264,43 @@ class Bridge:
 
         raise PublicError("unknown_command", "The command is not supported.")
 
-    def _active_artifact_records(self) -> tuple:
-        return self.source_scoping.active_evidence(self.artifact_records)
+    def _prepare_downstream_project_evidence(
+        self,
+        *,
+        after_vault_lock: bool = False,
+    ) -> tuple[tuple, tuple, bool]:
+        """Apply the one authoritative Source Scoping boundary for project consumers."""
+        status = self.source_scoping.status
+        if status == STATUS_NONE:
+            if after_vault_lock:
+                self.records, self.spans = _compose_evidence(
+                    self.artifact_records,
+                    self.vault,
+                )
+            return self.records, self.spans, False
 
-    def _refresh_evidence(self) -> None:
-        self.records, self.spans = _compose_evidence(self._active_artifact_records(), self.vault)
+        if status in {STATUS_PENDING_REVIEW, STATUS_INVALID}:
+            if after_vault_lock:
+                self.records = ()
+                self.spans = ()
+                return self.records, self.spans, True
+            raise ValidationError()
 
-    def _prepare_analysis_evidence(self) -> None:
-        if self.source_scoping.status != STATUS_NONE:
-            self._refresh_evidence()
+        if status != STATUS_APPROVED:
+            if after_vault_lock:
+                self.records = ()
+                self.spans = ()
+                return self.records, self.spans, True
+            raise ValidationError()
+
+        approved_artifacts = self.source_scoping.active_evidence(
+            self.artifact_records
+        )
+        self.records, self.spans = _compose_evidence(
+            approved_artifacts,
+            self.vault,
+        )
+        return self.records, self.spans, True
 
     def _analysis_matches_live_evidence(self) -> bool:
         if self.snapshot is None:
