@@ -1,0 +1,130 @@
+FAILED GATE: full-backend
+
+........................................................................ [ 24%]
+...............F........................................................ [ 48%]
+........................................................................ [ 72%]
+..........................F.F...........F...F........................... [ 96%]
+............                                                             [100%]
+=================================== FAILURES ===================================
+_ test_lock_keeps_only_live_artifact_projection_and_hides_owner_and_attestations _
+
+tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-2/test_lock_keeps_only_live_arti0')
+
+    def test_lock_keeps_only_live_artifact_projection_and_hides_owner_and_attestations(
+        tmp_path: Path,
+    ) -> None:
+        bridge, _, _, _ = _initialize_load_and_analyze(
+            tmp_path / "lock", project="Lock Project", token="LOCK", password="lock-secret"
+        )
+        artifact_records = copy.deepcopy(_workspace(bridge)["evidence_records"])
+        statement = "Encrypted attestation must leave the live evidence projection on lock"
+        proposal = bridge.handle({"command": "send_message", "message": f"I attest {statement}"})
+        assert proposal["ok"] is True
+        proposal_id = proposal["data"]["attestation_proposal"]["proposal_id"]
+        confirmed = bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
+        assert confirmed["ok"] is True
+        attestation_id = confirmed["data"]["evidence_id"]
+>       assert _workspace(bridge)["evidence_count"] == 6
+E       assert 5 == 6
+
+tests/test_audit_project_report_contract_v3.py:431: AssertionError
+____ test_bridge_complete_offline_aurora_flow_with_attestation_confirmation ____
+
+tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-2/test_bridge_complete_offline_a0')
+
+    def test_bridge_complete_offline_aurora_flow_with_attestation_confirmation(tmp_path: Path):
+        bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+    
+        analyze_resp = bridge.handle({"command": "analyze_project", "question": "what changed overnight?"})
+        assert analyze_resp["ok"] is True
+        data = analyze_resp["data"]
+        assert data["analysis_status"] == "break_found"
+        cards = data["citation_cards"]
+        assert cards
+        span_texts = {s.span_id: s.text for s in bridge.spans}
+        for card in cards:
+            assert set(card.keys()) == CITATION_CARD_FIELDS
+            assert card["exact_text"] == span_texts[card["span_id"]]
+    
+        before_bytes = Path(vault_path).read_bytes()
+        before_state = bridge.handle({"command": "get_workspace_state"})["data"]
+        assert before_state["evidence_count"] == 5
+    
+        propose_resp = bridge.handle({"command": "send_message", "message": "I attest the location change is now confirmed operationally"})
+        assert propose_resp["ok"] is True
+        assert propose_resp["data"]["kind"] == "attestation_proposal"
+        proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
+    
+        assert Path(vault_path).read_bytes() == before_bytes
+        unchanged_state = bridge.handle({"command": "get_workspace_state"})["data"]
+        assert unchanged_state["evidence_count"] == 5
+    
+        confirm_resp = bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
+        assert confirm_resp["ok"] is True
+        confirm_data = confirm_resp["data"]
+>       assert confirm_data["evidence_count"] == 6
+E       assert 5 == 6
+
+tests/test_vertical_skeleton.py:242: AssertionError
+_________ test_locking_through_bridge_clears_attestations_and_analysis _________
+
+tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-2/test_locking_through_bridge_cl0')
+
+    def test_locking_through_bridge_clears_attestations_and_analysis(tmp_path: Path):
+        bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+        bridge.handle({"command": "analyze_project", "question": "q"})
+        propose_resp = bridge.handle({"command": "send_message", "message": "I attest this needs review"})
+        proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
+        bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
+>       assert len(bridge.records) == 6
+E       AssertionError: assert 5 == 6
+E        +  where 5 = len((ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')))
+E        +    where (ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')) = <continuity_ai.bridge.Bridge object at 0x7f91e02945c0>.records
+
+tests/test_vertical_skeleton.py:276: AssertionError
+_ test_successful_initialize_vault_replacement_invalidates_previous_vault_and_evidence _
+
+tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-2/test_successful_initialize_vau0')
+
+    def test_successful_initialize_vault_replacement_invalidates_previous_vault_and_evidence(tmp_path: Path):
+        bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+        bridge.handle({"command": "analyze_project", "question": "q"})
+        propose_resp = bridge.handle({"command": "send_message", "message": "I attest something old"})
+        proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
+        confirm_resp = bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
+        old_evidence_id = confirm_resp["data"]["evidence_id"]
+>       assert len(bridge.records) == 6
+E       AssertionError: assert 5 == 6
+E        +  where 5 = len((ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')))
+E        +    where (ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')) = <continuity_ai.bridge.Bridge object at 0x7f91e02c6cc0>.records
+
+tests/test_vertical_skeleton.py:454: AssertionError
+_ test_successful_unlock_replacement_invalidates_old_session_and_refreshes_attestations _
+
+tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-2/test_successful_unlock_replace0')
+
+    def test_successful_unlock_replacement_invalidates_old_session_and_refreshes_attestations(tmp_path: Path):
+        bridge, vault_path, artifact_root = _init_and_load(tmp_path)
+        bridge.handle({"command": "analyze_project", "question": "q"})
+        propose_resp = bridge.handle({"command": "send_message", "message": "attest one"})
+        proposal_id = propose_resp["data"]["attestation_proposal"]["proposal_id"]
+        bridge.handle({"command": "confirm_attestation", "proposal_id": proposal_id})
+>       assert len(bridge.records) == 6
+E       AssertionError: assert 5 == 6
+E        +  where 5 = len((ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')))
+E        +    where (ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')) = <continuity_ai.bridge.Bridge object at 0x7f91e0295880>.records
+
+tests/test_vertical_skeleton.py:563: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_audit_project_report_contract_v3.py::test_lock_keeps_only_live_artifact_projection_and_hides_owner_and_attestations - assert 5 == 6
+FAILED tests/test_vertical_skeleton.py::test_bridge_complete_offline_aurora_flow_with_attestation_confirmation - assert 5 == 6
+FAILED tests/test_vertical_skeleton.py::test_locking_through_bridge_clears_attestations_and_analysis - AssertionError: assert 5 == 6
+ +  where 5 = len((ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')))
+ +    where (ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')) = <continuity_ai.bridge.Bridge object at 0x7f91e02945c0>.records
+FAILED tests/test_vertical_skeleton.py::test_successful_initialize_vault_replacement_invalidates_previous_vault_and_evidence - AssertionError: assert 5 == 6
+ +  where 5 = len((ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')))
+ +    where (ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')) = <continuity_ai.bridge.Bridge object at 0x7f91e02c6cc0>.records
+FAILED tests/test_vertical_skeleton.py::test_successful_unlock_replacement_invalidates_old_session_and_refreshes_attestations - AssertionError: assert 5 == 6
+ +  where 5 = len((ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')))
+ +    where (ReasoningEvidence(evidence_id='EV-AUR-001', source_type='email', author_or_actor='Mara Chen, Investor', timestamp='20...ct', uri='notes/crew_briefing.md', artifact_sha256='36772c217f27e3e9c5858b9b327a579e0cb7e6659345743868d53c21ac83520c')) = <continuity_ai.bridge.Bridge object at 0x7f91e0295880>.records
+5 failed, 295 passed in 9.15s
