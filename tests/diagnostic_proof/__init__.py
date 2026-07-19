@@ -1,0 +1,1 @@
+"""Diagnostic Proof Core tests."""
