@@ -1,4 +1,4 @@
-# Local Codex Session Controller v0.2
+# Local Codex Session Controller v0.3
 
 ## Product and architecture boundary
 
@@ -98,12 +98,13 @@ content, process output, credential, or semantic output. Recovery never creates
 an invocation receipt, structured output, workflow success, or semantic
 success.
 
-JsonSessionStore performs an operation-ID compare-and-save while holding both
-its in-process lock and a same-directory OS advisory recovery lock. The JSON
+JsonSessionStore performs recovery through the same revision compare-and-swap
+primitive and same-directory OS advisory lock used by every normal state save.
+Recovery additionally compares the exact retained operation UUID. The JSON
 document is still published by same-directory temporary write and atomic
 replacement. Independent controllers therefore cannot both recover the same
-operation. A failed write leaves the previously persisted active marker and
-operation identity unchanged.
+operation. A failed write leaves the previously persisted active marker,
+operation identity, and revision unchanged.
 
 Ordinary transitions and availability methods still require an idle session.
 They cannot clear an abandoned marker. Only normal operation completion or the
@@ -151,6 +152,47 @@ preserved as the cause for local diagnostics. Raw paths, source evidence, and
 credentials are not copied into the public error. Unrelated exceptions are not
 captured by this translation.
 
+Version 0.3 also closes the separate adapter-owned pre-launch window after an
+operation reservation has been persisted. Immediately before any runner or
+provider could be called, the adapter uses lstat and strict resolution to
+require that the bound root is still the same non-link directory. It rejects
+root deletion or inaccessibility, directory-to-file replacement, link or
+Windows reparse-point substitution, identity changes during the snapshot, and
+workspace snapshot failure as precise CodexProcessBoundaryError subtypes. Raw
+OSError and PermissionError instances are suppressed rather than exposed in a
+public exception chain.
+
+Those typed errors enter the controller's ordinary failed-attempt path. The
+controller atomically persists a sanitized failure receipt, clears the active
+operation and marker together, retains any earlier successful receipt, and
+raises a fixed WorkspaceChanged or CodexUnavailable message. No runner or
+provider fallback is constructed or called for these pre-launch failures.
+
+## Session revision and cross-process CAS
+
+Every v0.3 controller-session record contains a positive monotonic revision.
+Creation durably starts at revision 1. A caller submits the revision it loaded
+as the expected revision; a successful save atomically publishes the proposed
+state at expected revision plus one. The caller cannot supply or skip the next
+durable revision.
+
+Create, normal save, and recovery all acquire the same per-store advisory lock
+in addition to the store instance's in-process lock. Under that cross-process
+lock, save and recovery re-read and fully validate the current JSON document,
+compare the target session revision, preserve every unrelated session record,
+and publish by same-directory atomic replacement. Recovery uses that same CAS
+and additionally verifies the expected active operation UUID. A stale normal
+writer receives ConcurrentSessionModification and changes no durable field. A
+stale recovery receives the more precise ActiveOperationMismatch when its
+operation is no longer retained.
+
+The durable revision advances only in the document passed to the successful
+atomic replacement. Lock acquisition failure, temporary-write failure, and
+replace failure are fail-closed and do not advance it. Corrupt state is
+rejected before comparison. The lock implementation uses msvcrt byte-range
+locking on Windows and flock on supported POSIX systems, so independent Python
+processes share the same invariant.
+
 ## Preserved process and receipt boundaries
 
 CodexCliProcessAdapter remains the only Codex subprocess implementation. The
@@ -174,8 +216,10 @@ same-ID resume, input integrity, and final atomic persistence all pass.
 - Recovery proves only that the retained OS operation identity is dead. It does
   not prove whether Codex produced useful output, whether any semantic work
   completed, or whether a new Codex thread was created before the crash.
-- Session schema v2 is strict. A v0.1 retained document is incompatible and
-  fails closed rather than receiving a validation-bypassing default.
+- Session schema v3 is strict and requires the explicit revision field. A v0.2
+  or earlier retained document is incompatible and fails closed. A v3 record
+  missing its revision is corrupt. No migration or guessed revision is
+  performed.
 - Recovery is local and explicit. There is no automatic expiry, automatic
   replacement session, global mutable recovery registry, or remote-process
   liveness claim.

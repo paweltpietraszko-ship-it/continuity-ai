@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import shutil
 import subprocess
 import sys
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import continuity_ai.codex_process as codex_process_module
+from continuity_ai.codex_operation import ActiveCodexOperation, OperationStage, capture_process_identity
+from continuity_ai.openai_provider import OpenAIReasoningProvider
 from continuity_ai.codex_process import (
     CodexCliCapabilities,
     CodexCliProcessAdapter,
@@ -20,6 +25,7 @@ from continuity_ai.codex_process import (
 from continuity_ai.codex_session import (
     CodexAvailability,
     CodexControllerSession,
+    CodexOperation,
     CodexLimitReached,
     CodexNotAuthenticated,
     CodexOperationRequest,
@@ -27,6 +33,7 @@ from continuity_ai.codex_session import (
     CodexSessionController,
     CodexSessionMismatch,
     CodexUnavailable,
+    ConcurrentSessionModification,
     CorruptSessionState,
     IncompatibleSessionState,
     InvalidCodexOutput,
@@ -165,13 +172,13 @@ def test_resume_requires_version_proof_in_addition_to_cli_flags() -> None:
 def test_state_serialization_reload_is_deterministic(tmp_path: Path) -> None:
     controller, store, _ = _controller(tmp_path)
     created = controller.create_session(_workspace(tmp_path))
-    before = store.path.read_bytes()
     reloaded = store.load(created.controller_session_id)
     store.save(reloaded)
 
     assert reloaded == created
-    assert store.path.read_bytes() == before
-    retained = json.loads(before)
+    retained_session = store.load(created.controller_session_id)
+    assert retained_session == replace(reloaded, revision=reloaded.revision + 1)
+    retained = json.loads(store.path.read_bytes())
     assert "prompt" not in json.dumps(retained).casefold()
     assert "token" not in json.dumps(retained).casefold()
 
@@ -593,3 +600,385 @@ def test_invalid_transition_cannot_approve_without_explicit_binding(
 
     with pytest.raises(InvalidSessionState):
         controller.enter_conversational_phase(created.controller_session_id)
+
+
+class BeforeInvokeAdapter(CodexCliProcessAdapter):
+    def __init__(self, base: CodexCliProcessAdapter, before: Any) -> None:
+        super().__init__(
+            base.executable,
+            resolved_executable=base.resolved_executable,
+            version=base.version,
+            capabilities=base.capabilities,
+            executable_identity=base.executable_identity,
+            process_runner=base._runner,
+        )
+        self.before = before
+
+    def invoke(self, request: Any) -> Any:
+        self.before(Path(request.workspace_root))
+        return super().invoke(request)
+
+
+def _controller_with_prelaunch_action(
+    tmp_path: Path,
+    before: Any,
+    runner: FakeRunner | None = None,
+) -> tuple[CodexSessionController, JsonSessionStore, FakeRunner]:
+    selected = runner or FakeRunner()
+    base = _adapter(selected)
+    store = JsonSessionStore(tmp_path / "sessions.json")
+    return (
+        CodexSessionController(
+            store,
+            BeforeInvokeAdapter(base, before),
+            clock=TickClock(),
+        ),
+        store,
+        selected,
+    )
+
+
+def _assert_sanitized_prelaunch_failure(error: BaseException, root: Path) -> None:
+    current: BaseException | None = error
+    while current is not None:
+        assert not isinstance(current, OSError)
+        assert str(root) not in str(current)
+        current = current.__cause__
+
+
+def test_deleted_workspace_prelaunch_failure_is_typed_persisted_and_released(
+    tmp_path: Path,
+) -> None:
+    def remove(root: Path) -> None:
+        shutil.rmtree(root)
+
+    controller, store, runner = _controller_with_prelaunch_action(tmp_path, remove)
+    root = _workspace(tmp_path)
+    session = controller.create_session(root)
+
+    with pytest.raises(WorkspaceChanged) as captured:
+        controller.start_investigation(session.controller_session_id, root, _request())
+
+    _assert_sanitized_prelaunch_failure(captured.value, root)
+    retained = store.load(session.controller_session_id)
+    assert retained.codex_process_active is False
+    assert retained.active_operation is None
+    assert retained.last_invocation_receipt == captured.value.receipt
+    assert retained.last_invocation_receipt is not None
+    assert retained.last_invocation_receipt.process_started is False
+    assert runner.calls == []
+
+
+def test_permission_error_prelaunch_is_typed_sanitized_and_has_no_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _workspace(tmp_path)
+    original_lstat = Path.lstat
+    provider_calls = 0
+
+    def forbidden_provider(self: Any, client: Any = None) -> None:
+        nonlocal provider_calls
+        provider_calls += 1
+
+    def deny(bound_root: Path) -> None:
+        def lstat(path: Path) -> Any:
+            if path == bound_root:
+                raise PermissionError("C:/secret/customer/source.txt")
+            return original_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", lstat)
+
+    monkeypatch.setattr(OpenAIReasoningProvider, "__init__", forbidden_provider)
+    controller, store, runner = _controller_with_prelaunch_action(tmp_path, deny)
+    session = controller.create_session(root)
+
+    with pytest.raises(WorkspaceChanged) as captured:
+        controller.start_investigation(session.controller_session_id, root, _request())
+
+    _assert_sanitized_prelaunch_failure(captured.value, root)
+    assert "secret" not in str(captured.value)
+    assert provider_calls == 0
+    assert runner.calls == []
+    assert store.load(session.controller_session_id).codex_process_active is False
+
+
+def test_workspace_directory_to_file_change_is_rejected_before_launch(
+    tmp_path: Path,
+) -> None:
+    def replace_with_file(root: Path) -> None:
+        shutil.rmtree(root)
+        root.write_text("substitution", encoding="utf-8")
+
+    controller, store, runner = _controller_with_prelaunch_action(
+        tmp_path, replace_with_file
+    )
+    root = _workspace(tmp_path)
+    session = controller.create_session(root)
+
+    with pytest.raises(WorkspaceChanged):
+        controller.start_investigation(session.controller_session_id, root, _request())
+
+    assert runner.calls == []
+    assert store.load(session.controller_session_id).active_operation is None
+
+
+def test_workspace_reparse_substitution_is_rejected_before_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def substitute(_: Path) -> None:
+        monkeypatch.setattr(codex_process_module, "_is_link_or_reparse", lambda value: True)
+
+    controller, store, runner = _controller_with_prelaunch_action(tmp_path, substitute)
+    root = _workspace(tmp_path)
+    session = controller.create_session(root)
+
+    with pytest.raises(WorkspaceChanged):
+        controller.start_investigation(session.controller_session_id, root, _request())
+
+    assert runner.calls == []
+    assert store.load(session.controller_session_id).active_operation is None
+
+
+def test_prelaunch_failure_preserves_prior_successful_receipt(tmp_path: Path) -> None:
+    runner = FakeRunner()
+
+    def fail_only_after_success(root: Path) -> None:
+        if runner.calls:
+            shutil.rmtree(root)
+
+    controller, store, _ = _controller_with_prelaunch_action(
+        tmp_path, fail_only_after_success, runner
+    )
+    root = _workspace(tmp_path)
+    created = controller.create_session(root)
+    successful = controller.start_investigation(
+        created.controller_session_id, root, _request()
+    )
+
+    with pytest.raises(WorkspaceChanged) as captured:
+        controller.resume_session(
+            created.controller_session_id,
+            THREAD_ID,
+            root,
+            _request(),
+        )
+
+    retained = store.load(created.controller_session_id)
+    assert retained.last_successful_invocation_receipt == successful.receipt
+    assert retained.last_invocation_receipt == captured.value.receipt
+    assert len(runner.calls) == 1
+
+
+def test_stale_session_revision_is_rejected_without_durable_change(
+    tmp_path: Path,
+) -> None:
+    controller, store, _ = _controller(tmp_path)
+    created = controller.create_session(_workspace(tmp_path))
+    first = store.load(created.controller_session_id)
+    stale = store.load(created.controller_session_id)
+    store.save(replace(first, sanitized_error_code="first-writer"))
+    durable = store.load(created.controller_session_id)
+
+    with pytest.raises(ConcurrentSessionModification) as captured:
+        store.save(replace(stale, sanitized_error_code="stale-writer"))
+
+    assert str(captured.value) == "Controller session was modified concurrently."
+    assert captured.value.__cause__ is None
+    assert store.load(created.controller_session_id) == durable
+    assert durable.sanitized_error_code == "first-writer"
+
+
+def test_unrelated_session_survives_session_local_cas(tmp_path: Path) -> None:
+    controller, store, _ = _controller(tmp_path)
+    first = controller.create_session(_workspace(tmp_path, "one"))
+    second = controller.create_session(_workspace(tmp_path, "two"))
+    first_snapshot = store.load(first.controller_session_id)
+    second_snapshot = store.load(second.controller_session_id)
+    store.save(replace(second_snapshot, sanitized_error_code="second"))
+    store.save(replace(first_snapshot, sanitized_error_code="first"))
+
+    assert store.load(first.controller_session_id).sanitized_error_code == "first"
+    assert store.load(second.controller_session_id).sanitized_error_code == "second"
+
+
+def test_atomic_replace_failure_does_not_advance_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, store, _ = _controller(tmp_path)
+    created = controller.create_session(_workspace(tmp_path))
+    snapshot = store.load(created.controller_session_id)
+    original_replace = Path.replace
+
+    def fail_replace(path: Path, target: Path) -> Path:
+        if Path(target) == store.path:
+            raise OSError("C:/secret/store.json")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(SessionPersistenceError) as captured:
+        store.save(replace(snapshot, sanitized_error_code="not-durable"))
+
+    assert captured.value.__cause__ is None
+    assert store.load(created.controller_session_id) == snapshot
+
+
+def test_lock_acquisition_failure_is_fail_closed(tmp_path: Path) -> None:
+    controller, store, _ = _controller(tmp_path)
+    created = controller.create_session(_workspace(tmp_path))
+    snapshot = store.load(created.controller_session_id)
+    lock_path = store.path.parent / f".{store.path.name}.lock"
+    lock_path.unlink()
+    lock_path.mkdir()
+
+    with pytest.raises(SessionPersistenceError) as captured:
+        store.save(replace(snapshot, sanitized_error_code="not-durable"))
+
+    assert str(captured.value) == "Session store lock is unavailable."
+    assert store.load(created.controller_session_id) == snapshot
+
+
+def test_missing_revision_and_v02_state_are_explicitly_rejected(tmp_path: Path) -> None:
+    controller, store, _ = _controller(tmp_path)
+    created = controller.create_session(_workspace(tmp_path))
+    document = json.loads(store.path.read_text(encoding="utf-8"))
+    del document["sessions"][created.controller_session_id]["revision"]
+    store.path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(CorruptSessionState):
+        store.load(created.controller_session_id)
+
+    document["schema_version"] = 2
+    store.path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(IncompatibleSessionState):
+        store.load(created.controller_session_id)
+
+
+def test_recovery_and_normal_save_share_one_revision_cas(tmp_path: Path) -> None:
+    controller, store, _ = _controller(tmp_path)
+    created = controller.create_session(_workspace(tmp_path))
+    operation_id = str(uuid.uuid4())
+    active = ActiveCodexOperation(
+        operation_id=operation_id,
+        controller_session_id=created.controller_session_id,
+        operation_type=CodexOperation.INVESTIGATION.value,
+        stage=OperationStage.RESERVED,
+        owner_process=capture_process_identity(),
+        codex_process=None,
+        reserved_at=datetime.now(timezone.utc),
+    )
+    store.save(replace(created, codex_process_active=True, active_operation=active))
+    snapshot = store.load(created.controller_session_id)
+    candidates = (
+        (JsonSessionStore(store.path).save, replace(snapshot, sanitized_error_code="save")),
+        (
+            lambda value: JsonSessionStore(store.path).recover(value, operation_id),
+            replace(snapshot, codex_process_active=False, active_operation=None),
+        ),
+    )
+    barrier = threading.Barrier(2)
+    outcomes: list[BaseException | None] = []
+
+    def write(call: Any, value: CodexControllerSession) -> None:
+        barrier.wait(timeout=5)
+        try:
+            call(value)
+            outcomes.append(None)
+        except BaseException as exc:
+            outcomes.append(exc)
+
+    threads = [threading.Thread(target=write, args=item) for item in candidates]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert outcomes.count(None) == 1
+    conflicts = [item for item in outcomes if item is not None]
+    assert len(conflicts) == 1
+    assert isinstance(conflicts[0], ConcurrentSessionModification)
+
+
+class ProcessBarrierStore:
+    def __init__(self, path: Path, barrier: Any) -> None:
+        self.delegate = JsonSessionStore(path)
+        self.barrier = barrier
+
+    def create(self, session: CodexControllerSession) -> None:
+        self.delegate.create(session)
+
+    def load(self, controller_session_id: str) -> CodexControllerSession:
+        session = self.delegate.load(controller_session_id)
+        self.barrier.wait(timeout=10)
+        return session
+
+    def save(self, session: CodexControllerSession) -> None:
+        self.delegate.save(session)
+
+    def recover(
+        self,
+        session: CodexControllerSession,
+        expected_operation_id: str,
+    ) -> None:
+        self.delegate.recover(session, expected_operation_id)
+
+
+def _race_begin_worker(
+    store_path: str,
+    workspace_root: str,
+    controller_session_id: str,
+    barrier: Any,
+    results: Any,
+) -> None:
+    try:
+        controller = CodexSessionController(
+            ProcessBarrierStore(Path(store_path), barrier),
+            _adapter(FakeRunner()),
+            clock=TickClock(),
+        )
+        controller.start_investigation(
+            controller_session_id,
+            Path(workspace_root),
+            _request(),
+        )
+        results.put("success")
+    except BaseException as exc:
+        results.put(type(exc).__name__)
+
+
+def test_two_spawned_processes_cannot_both_begin_same_operation(
+    tmp_path: Path,
+) -> None:
+    controller, store, _ = _controller(tmp_path)
+    root = _workspace(tmp_path)
+    created = controller.create_session(root)
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    results = context.Queue()
+    processes = [
+        context.Process(
+            target=_race_begin_worker,
+            args=(
+                str(store.path),
+                str(root),
+                created.controller_session_id,
+                barrier,
+                results,
+            ),
+        )
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20)
+
+    assert all(process.exitcode == 0 for process in processes)
+    assert sorted(results.get(timeout=5) for _ in range(2)) == [
+        "ConcurrentSessionModification",
+        "success",
+    ]
+    retained = store.load(created.controller_session_id)
+    assert retained.phase is SessionPhase.INVESTIGATING
+    assert retained.last_successful_invocation_receipt is not None

@@ -116,9 +116,29 @@ class DeleteWorkspaceBeforeInvokeAdapter(CodexCliProcessAdapter):
         return super().invoke(request)
 
 
-def test_workspace_deleted_between_controller_validation_and_adapter_invoke_leaks_raw_oserror(
+def test_workspace_deleted_before_adapter_launch_is_typed_persisted_and_reusable(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The independent audit commit originally reproduced a raw-OSError leak
+    and permanent RESERVED marker. The v0.3 repair commit converts that
+    one-way reproducer into a permanent fixed-behavior regression while
+    preserving the audit commit unchanged in history.
+    """
+
+    from continuity_ai.openai_provider import OpenAIReasoningProvider
+
+    provider_constructor_calls = 0
+
+    def forbidden_provider_constructor(self, client=None):  # type: ignore[no-untyped-def]
+        nonlocal provider_constructor_calls
+        provider_constructor_calls += 1
+
+    monkeypatch.setattr(
+        OpenAIReasoningProvider,
+        "__init__",
+        forbidden_provider_constructor,
+    )
     runner = FakeRunner()
     base = _adapter(runner)
     adapter = DeleteWorkspaceBeforeInvokeAdapter(
@@ -134,63 +154,44 @@ def test_workspace_deleted_between_controller_validation_and_adapter_invoke_leak
     root = _workspace(tmp_path)
     session = controller.create_session(root)
 
-    with pytest.raises(Exception) as captured:
+    with pytest.raises(CodexSessionError) as captured:
         controller.start_investigation(
             session.controller_session_id,
             root,
             CodexOperationRequest("Inspect only this workspace.", SCHEMA, 5),
         )
 
-    # FALSIFICATION: the escaping exception is a raw OSError, not the typed
-    # CodexSessionError boundary the public API is supposed to guarantee.
-    assert not isinstance(captured.value, CodexSessionError), (
-        "expected a raw, untyped exception to escape (proving the gap); "
-        "got a typed CodexSessionError instead, which would mean this is "
-        "already handled"
+    # Public exception text and its complete cause chain stay typed and do not
+    # disclose the deleted workspace or the underlying FileNotFoundError.
+    current: BaseException | None = captured.value
+    while current is not None:
+        assert not isinstance(current, (OSError, FileNotFoundError))
+        assert str(root) not in str(current)
+        current = current.__cause__
+
+    retained = store.load(session.controller_session_id)
+    assert captured.value.receipt is not None
+    assert retained.last_invocation_receipt == captured.value.receipt
+    assert retained.last_successful_invocation_receipt is None
+    assert retained.active_operation is None
+    assert retained.codex_process_active is False
+    assert runner.calls == []
+    assert provider_constructor_calls == 0
+
+    # Recreate the exact valid binding and prove the same retained session is
+    # immediately usable without recovery or automatic session replacement.
+    root.mkdir()
+    (root / "source.txt").write_text("alpha", encoding="utf-8")
+    retry_controller = CodexSessionController(store, base, clock=TickClock())
+    retried = retry_controller.start_investigation(
+        session.controller_session_id,
+        root,
+        CodexOperationRequest("Inspect only this workspace.", SCHEMA, 5),
     )
-    assert isinstance(captured.value, OSError)
-
-    stuck = store.load(session.controller_session_id)
-    # FALSIFICATION: no failure receipt was ever persisted, so the active
-    # marker set immediately before the adapter call is still active.
-    assert stuck.codex_process_active is True
-    assert stuck.active_operation is not None
-    assert stuck.last_invocation_receipt is None
-
-    # The owning process (this test process) is still alive, so every further
-    # attempt to use the session is rejected as busy, and recovery is
-    # rejected because the owner is provably ALIVE. There is no documented
-    # operator-level path out of this state short of killing the process that
-    # holds the owner identity -- reproducing the original permanent-lockout
-    # defect through a different, still-open trigger.
-    with pytest.raises(CodexSessionBusy):
-        controller.start_investigation(
-            session.controller_session_id,
-            root,
-            CodexOperationRequest("Inspect only this workspace.", SCHEMA, 5),
-        )
-    with pytest.raises(ActiveOperationAlive):
-        controller.recover_abandoned_operation(
-            session.controller_session_id,
-            stuck.active_operation.operation_id,
-        )
-
-    pytest.fail(
-        "REPRODUCED: CodexCliProcessAdapter.invoke resolves "
-        "request.workspace_root with a bare Path.resolve(strict=True) before "
-        "entering its own try/except boundary (codex_process.py, invoke). "
-        "When the workspace disappears between the controller's own "
-        "workspace validation and this call, a raw OSError -- not "
-        "CodexProcessBoundaryError, not any CodexSessionError -- escapes "
-        "through the public controller API. Because the exception fires "
-        "before lifecycle.before_launch, no failure receipt is ever "
-        "persisted and the RESERVED active marker is never cleared. Every "
-        "further call on this session raises CodexSessionBusy, and recovery "
-        "is correctly rejected as ActiveOperationAlive because the owning "
-        "process is genuinely still alive -- so the session is permanently "
-        "locked for the remaining lifetime of that process, with no "
-        "documented operator-level path out short of killing it."
-    )
+    assert retried.receipt.succeeded is True
+    assert retried.session.controller_session_id == session.controller_session_id
+    assert len(runner.calls) == 1
+    assert provider_constructor_calls == 0
 
 
 class ReleaseAfterLoadStore:

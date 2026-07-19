@@ -36,7 +36,7 @@ from continuity_ai.codex_process import (
     workspace_fingerprint,
 )
 
-SESSION_SCHEMA_VERSION = 2
+SESSION_SCHEMA_VERSION = 3
 RECEIPT_SCHEMA_VERSION = 1
 RECOVERY_EVENT_SCHEMA_VERSION = 1
 
@@ -154,6 +154,10 @@ class SessionPersistenceError(CodexSessionError):
     failure_category = FailureCategory.INVALID_STATE
 
 
+class ConcurrentSessionModification(CodexSessionError):
+    failure_category = FailureCategory.INVALID_STATE
+
+
 class AbandonedOperationRecoveryError(CodexSessionError):
     failure_category = FailureCategory.INTERRUPTED
 
@@ -212,6 +216,7 @@ class InvocationReceipt:
 @dataclass(frozen=True)
 class CodexControllerSession:
     schema_version: int
+    revision: int
     controller_session_id: str
     codex_session_id: str | None
     codex_executable: str
@@ -271,13 +276,18 @@ class JsonSessionStore:
 
     def create(self, session: CodexControllerSession) -> None:
         with self._lock:
-            document = self._read_document()
-            sessions = document["sessions"]
-            if session.controller_session_id in sessions:
-                raise InvalidSessionState("Controller session already exists.")
-            sessions[session.controller_session_id] = _session_to_dict(session)
-            _validate_session_collection(sessions)
-            self._write_document(document)
+            with _session_store_lock(self.path):
+                document = self._read_document()
+                sessions = document["sessions"]
+                if session.controller_session_id in sessions:
+                    raise InvalidSessionState("Controller session already exists.")
+                if session.revision != 1:
+                    raise InvalidSessionState(
+                        "A new controller session must start at revision one."
+                    )
+                sessions[session.controller_session_id] = _session_to_dict(session)
+                _validate_session_collection(sessions)
+                self._write_document(document)
 
     def load(self, controller_session_id: str) -> CodexControllerSession:
         with self._lock:
@@ -288,24 +298,28 @@ class JsonSessionStore:
             return _session_from_dict(raw)
 
     def save(self, session: CodexControllerSession) -> None:
-        with self._lock:
-            document = self._read_document()
-            sessions = document["sessions"]
-            if session.controller_session_id not in sessions:
-                raise CodexSessionMismatch("Controller session ID does not match retained state.")
-            sessions[session.controller_session_id] = _session_to_dict(session)
-            _validate_session_collection(sessions)
-            self._write_document(document)
+        self._compare_and_swap(session)
 
     def recover(
         self,
         session: CodexControllerSession,
         expected_operation_id: str,
     ) -> None:
-        """Atomically compare the active operation identity and save recovery."""
+        """Atomically compare revision and active operation identity for recovery."""
 
+        self._compare_and_swap(
+            session,
+            expected_operation_id=expected_operation_id,
+        )
+
+    def _compare_and_swap(
+        self,
+        session: CodexControllerSession,
+        *,
+        expected_operation_id: str | None = None,
+    ) -> None:
         with self._lock:
-            with _recovery_store_lock(self.path):
+            with _session_store_lock(self.path):
                 document = self._read_document()
                 sessions = document["sessions"]
                 raw = sessions.get(session.controller_session_id)
@@ -314,16 +328,22 @@ class JsonSessionStore:
                         "Controller session ID does not match retained state."
                     )
                 current = _session_from_dict(raw)
-                active = current.active_operation
-                if (
-                    not current.codex_process_active
-                    or active is None
-                    or active.operation_id != expected_operation_id
-                ):
-                    raise ActiveOperationMismatch(
-                        "Active operation identity does not match retained state."
+                if expected_operation_id is not None:
+                    active = current.active_operation
+                    if (
+                        not current.codex_process_active
+                        or active is None
+                        or active.operation_id != expected_operation_id
+                    ):
+                        raise ActiveOperationMismatch(
+                            "Active operation identity does not match retained state."
+                        )
+                if current.revision != session.revision:
+                    raise ConcurrentSessionModification(
+                        "Controller session was modified concurrently."
                     )
-                sessions[session.controller_session_id] = _session_to_dict(session)
+                persisted = replace(session, revision=session.revision + 1)
+                sessions[session.controller_session_id] = _session_to_dict(persisted)
                 _validate_session_collection(sessions)
                 self._write_document(document)
 
@@ -346,7 +366,10 @@ class JsonSessionStore:
         return decoded
 
     def _write_document(self, document: Mapping[str, object]) -> None:
-        parent = self.path.parent.resolve()
+        try:
+            parent = self.path.parent.resolve(strict=True)
+        except OSError:
+            raise SessionPersistenceError("Session store parent is unavailable.") from None
         if not parent.is_dir() or self.path.parent.is_symlink():
             raise SessionPersistenceError("Session store parent is unavailable.")
         temporary = parent / f".{self.path.name}.tmp-{uuid.uuid4().hex}"
@@ -357,19 +380,21 @@ class JsonSessionStore:
                 newline="\n",
             )
             temporary.replace(self.path)
-        except OSError as exc:
+        except OSError:
             try:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
-            raise SessionPersistenceError("Session state could not be persisted atomically.") from exc
+            raise SessionPersistenceError(
+                "Session state could not be persisted atomically."
+            ) from None
 
 
 @contextmanager
-def _recovery_store_lock(store_path: Path) -> Iterator[None]:
-    lock_path = store_path.parent / f".{store_path.name}.recovery.lock"
+def _session_store_lock(store_path: Path) -> Iterator[None]:
+    lock_path = store_path.parent / f".{store_path.name}.lock"
     if lock_path.exists() and (lock_path.is_symlink() or not lock_path.is_file()):
-        raise SessionPersistenceError("Session recovery lock is unavailable.")
+        raise SessionPersistenceError("Session store lock is unavailable.")
     lock_file = None
     try:
         lock_file = lock_path.open("a+b")
@@ -397,8 +422,8 @@ def _recovery_store_lock(store_path: Path) -> Iterator[None]:
                 import fcntl
 
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-    except OSError as exc:
-        raise SessionPersistenceError("Session recovery lock is unavailable.") from exc
+    except OSError:
+        raise SessionPersistenceError("Session store lock is unavailable.") from None
     finally:
         if lock_file is not None:
             lock_file.close()
@@ -628,7 +653,7 @@ def _receipt_from_dict(value: object) -> InvocationReceipt | None:
 
 
 _SESSION_FIELDS = {
-    "schema_version", "controller_session_id", "codex_session_id",
+    "schema_version", "revision", "controller_session_id", "codex_session_id",
     "codex_executable", "codex_version", "workspace_root",
     "workspace_fingerprint", "approved_workspace_root",
     "approved_workspace_fingerprint", "phase", "availability", "created_at",
@@ -641,6 +666,7 @@ _SESSION_FIELDS = {
 def _session_to_dict(value: CodexControllerSession) -> dict[str, object]:
     return {
         "schema_version": value.schema_version,
+        "revision": value.revision,
         "controller_session_id": value.controller_session_id,
         "codex_session_id": value.codex_session_id,
         "codex_executable": value.codex_executable,
@@ -676,6 +702,7 @@ def _session_from_dict(value: object) -> CodexControllerSession:
     try:
         session = CodexControllerSession(
             schema_version=SESSION_SCHEMA_VERSION,
+            revision=_positive_int(value["revision"]),
             controller_session_id=_uuid_string(value["controller_session_id"]),
             codex_session_id=_optional_uuid_string(value["codex_session_id"]),
             codex_executable=_string(value["codex_executable"]),
@@ -825,6 +852,12 @@ def _optional_int(value: object) -> int | None:
     return value
 
 
+def _positive_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError
+    return value
+
+
 class CodexSessionController:
     """Persisted workflow lifecycle around exactly one local Codex CLI adapter."""
 
@@ -875,6 +908,7 @@ class CodexSessionController:
         now = self._now()
         session = CodexControllerSession(
             schema_version=SESSION_SCHEMA_VERSION,
+            revision=1,
             controller_session_id=str(self._id_factory()),
             codex_session_id=None,
             codex_executable=str(self.process_adapter.resolved_executable),
@@ -953,7 +987,7 @@ class CodexSessionController:
             last_explicit_failure=None,
             sanitized_error_code=None,
         )
-        self.store.save(updated)
+        updated = self._save_session(updated)
         return updated
 
     def start_reporting(
@@ -1120,7 +1154,7 @@ class CodexSessionController:
                 recovery_events=(*session.recovery_events, event),
             )
             self.store.recover(recovered, active.operation_id)
-            return recovered
+            return replace(recovered, revision=recovered.revision + 1)
         finally:
             self._release(controller_session_id)
 
@@ -1141,7 +1175,7 @@ class CodexSessionController:
             last_explicit_failure=None,
             sanitized_error_code=None,
         )
-        self.store.save(updated)
+        updated = self._save_session(updated)
         return updated
 
     def _mark_availability(
@@ -1160,7 +1194,7 @@ class CodexSessionController:
             last_explicit_failure=FailureState(category, now),
             sanitized_error_code=category.value,
         )
-        self.store.save(updated)
+        updated = self._save_session(updated)
         return updated
 
     def _execute(
@@ -1211,7 +1245,7 @@ class CodexSessionController:
             )
             # The active marker is persisted before launch. If this save fails,
             # no subprocess is created and no later phase can be published.
-            self.store.save(active)
+            active = self._save_session(active)
             operation_state = active
 
             def advance_operation(
@@ -1236,8 +1270,7 @@ class CodexSessionController:
                     active_operation=updated_operation,
                     updated_at=self._now(),
                 )
-                self.store.save(updated)
-                operation_state = updated
+                operation_state = self._save_session(updated)
 
             lifecycle = CodexInvocationLifecycle(
                 before_launch=lambda: advance_operation(OperationStage.LAUNCHING),
@@ -1272,7 +1305,7 @@ class CodexSessionController:
                     resume_session_id is not None,
                 )
                 failed = self._failed_state(operation_state, receipt)
-                self.store.save(failed)
+                self._save_session(failed)
                 raise WorkspaceChanged(
                     "Workspace changed before Codex process launch.", receipt=receipt
                 ) from exc
@@ -1288,7 +1321,7 @@ class CodexSessionController:
                     resume_session_id is not None,
                 )
                 failed = self._failed_state(operation_state, receipt)
-                self.store.save(failed)
+                self._save_session(failed)
                 raise CodexUnavailable(
                     "Codex process boundary is unavailable.", receipt=receipt
                 ) from exc
@@ -1352,7 +1385,7 @@ class CodexSessionController:
             )
             if category is not None:
                 failed = self._failed_state(operation_state, receipt)
-                self.store.save(failed)
+                self._save_session(failed)
                 raise _exception_for_failure(category, receipt)
 
             retained_codex_id = session.codex_session_id
@@ -1363,7 +1396,9 @@ class CodexSessionController:
                         structured_output_valid=False,
                         failure_category=FailureCategory.SESSION_MISMATCH,
                     )
-                    self.store.save(self._failed_state(operation_state, failed_receipt))
+                    self._save_session(
+                        self._failed_state(operation_state, failed_receipt)
+                    )
                     raise CodexSessionMismatch(
                         "Codex returned an identity assigned to another session.",
                         receipt=failed_receipt,
@@ -1382,7 +1417,7 @@ class CodexSessionController:
                 codex_process_active=False,
                 active_operation=None,
             )
-            self.store.save(succeeded)
+            succeeded = self._save_session(succeeded)
             assert structured is not None
             return CodexOperationResult(succeeded, receipt, structured)
         finally:
@@ -1459,7 +1494,7 @@ class CodexSessionController:
             category,
             resume_attempted,
         )
-        self.store.save(self._failed_state(session, receipt))
+        self._save_session(self._failed_state(session, receipt))
         return receipt
 
     def _boundary_failure_receipt(
@@ -1518,6 +1553,15 @@ class CodexSessionController:
             codex_process_active=False,
             active_operation=None,
         )
+
+    def _save_session(
+        self,
+        session: CodexControllerSession,
+    ) -> CodexControllerSession:
+        """Persist against ``session.revision`` and return the committed revision."""
+
+        self.store.save(session)
+        return replace(session, revision=session.revision + 1)
 
     def _acquire(self, controller_session_id: str) -> None:
         with self._active_lock:
