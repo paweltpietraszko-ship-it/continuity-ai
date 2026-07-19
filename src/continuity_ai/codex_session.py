@@ -1014,6 +1014,25 @@ class CodexSessionController:
         approved_workspace_root: Path,
         request: CodexOperationRequest,
     ) -> CodexOperationResult:
+        """Resume the same Codex thread the investigation created, now bound to
+        the approved-only workspace. Reporting never opens a replacement Codex
+        thread: it requires the APPROVED phase and a retained `codex_session_id`
+        from the prior investigation, and always resumes that exact ID."""
+        session = self.store.load(controller_session_id)
+        if session.phase is not SessionPhase.APPROVED:
+            raise InvalidSessionState("Reporting requires the approved phase.")
+        if session.codex_session_id is None:
+            receipt = self._record_preflight_failure(
+                session,
+                FailureCategory.SESSION_MISMATCH,
+                CodexOperation.REPORT,
+                _session_bound_root(session),
+                resume_attempted=True,
+            )
+            raise CodexSessionMismatch(
+                "Reporting requires a retained Codex session ID from the investigation.",
+                receipt=receipt,
+            )
         return self._execute(
             controller_session_id,
             approved_workspace_root,
@@ -1021,7 +1040,7 @@ class CodexSessionController:
             operation=CodexOperation.REPORT,
             allowed_phases={SessionPhase.APPROVED},
             success_phase=SessionPhase.REPORTING,
-            resume_session_id=None,
+            resume_session_id=session.codex_session_id,
         )
 
     def enter_conversational_phase(

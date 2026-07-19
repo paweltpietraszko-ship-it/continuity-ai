@@ -37,6 +37,7 @@ from continuity_ai.codex_session import (
     CodexUnavailable,
     ConcurrentSessionModification,
     CorruptSessionState,
+    FailureCategory,
     IncompatibleSessionState,
     InvalidCodexOutput,
     InvalidSessionState,
@@ -393,6 +394,124 @@ def test_explicit_approved_binding_is_separate_and_reporting_uses_it(
     assert bound.approved_workspace_root == str(approved)
     assert reported.session.phase is SessionPhase.REPORTING
     assert runner.calls[-1][1]["cwd"] == approved
+
+
+def _bound_for_reporting(
+    tmp_path: Path,
+    *,
+    runner: FakeRunner | None = None,
+    resume: bool = True,
+) -> tuple[CodexSessionController, JsonSessionStore, FakeRunner, Path, CodexControllerSession]:
+    controller, store, selected, original, investigated = _investigated(
+        tmp_path, runner=runner, resume=resume
+    )
+    waiting = controller.record_awaiting_human_review(
+        investigated.controller_session_id
+    )
+    approved = _workspace(tmp_path, "approved", "selected only")
+    bound = controller.bind_approved_workspace(
+        waiting.controller_session_id,
+        approved,
+        workspace_fingerprint(approved),
+    )
+    return controller, store, selected, approved, bound
+
+
+def test_reporting_resumes_the_genuine_investigation_session_id(
+    tmp_path: Path,
+) -> None:
+    controller, store, runner, approved, bound = _bound_for_reporting(tmp_path)
+    assert bound.codex_session_id == THREAD_ID
+    calls_before = len(runner.calls)
+
+    reported = controller.start_reporting(
+        bound.controller_session_id, approved, _request()
+    )
+
+    report_command = runner.calls[-1][0]
+    assert len(runner.calls) == calls_before + 1
+    assert "resume" in report_command
+    assert THREAD_ID in report_command
+    assert reported.session.phase is SessionPhase.REPORTING
+    assert reported.session.codex_session_id == THREAD_ID
+    assert reported.receipt.resume_attempted is True
+    assert reported.receipt.new_codex_session_created is False
+    assert reported.receipt.codex_session_id == THREAD_ID
+    retained = store.load(bound.controller_session_id)
+    assert retained.codex_session_id == THREAD_ID
+
+
+def test_reporting_returned_id_mismatch_fails_closed(tmp_path: Path) -> None:
+    controller, store, runner, approved, bound = _bound_for_reporting(tmp_path)
+    replacement_id = "87654321-4321-6789-9234-567812345678"
+    runner.thread_id = replacement_id
+
+    with pytest.raises(CodexSessionMismatch):
+        controller.start_reporting(bound.controller_session_id, approved, _request())
+
+    retained = store.load(bound.controller_session_id)
+    assert retained.phase is SessionPhase.APPROVED
+    assert retained.codex_session_id == THREAD_ID
+    assert retained.last_invocation_receipt.failure_category is FailureCategory.SESSION_MISMATCH
+    assert retained.last_invocation_receipt.resume_attempted is True
+
+
+def test_reporting_without_retained_codex_session_id_fails_closed_no_process(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner(thread_id=None)
+    controller, store, _, approved, bound = _bound_for_reporting(tmp_path, runner=runner)
+    assert bound.codex_session_id is None
+    calls_before = len(runner.calls)
+
+    with pytest.raises(CodexSessionMismatch):
+        controller.start_reporting(bound.controller_session_id, approved, _request())
+
+    assert len(runner.calls) == calls_before
+    retained = store.load(bound.controller_session_id)
+    assert retained.phase is SessionPhase.APPROVED
+    assert retained.last_invocation_receipt.resume_attempted is True
+    assert retained.last_invocation_receipt.process_started is False
+
+
+def test_reporting_never_invokes_provider_fallback_on_session_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import continuity_ai.openai_provider as provider_module
+    import continuity_ai.deterministic_offline_provider as offline_module
+
+    calls: list[str] = []
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        calls.append("fallback")
+        raise AssertionError("provider fallback invoked")
+
+    monkeypatch.setattr(provider_module, "OpenAIReasoningProvider", forbidden)
+    monkeypatch.setattr(offline_module, "DeterministicOfflineReasoningProvider", forbidden)
+    controller, _, runner, approved, bound = _bound_for_reporting(tmp_path)
+    runner.thread_id = "87654321-4321-6789-9234-567812345678"
+
+    with pytest.raises(CodexSessionMismatch):
+        controller.start_reporting(bound.controller_session_id, approved, _request())
+
+    assert calls == []
+
+
+def test_reporting_requires_approved_phase(tmp_path: Path) -> None:
+    controller, store, runner, _, investigated = _investigated(tmp_path)
+    waiting = controller.record_awaiting_human_review(
+        investigated.controller_session_id
+    )
+    calls_before = len(runner.calls)
+
+    with pytest.raises(InvalidSessionState):
+        controller.start_reporting(
+            waiting.controller_session_id,
+            Path(waiting.workspace_root),
+            _request(),
+        )
+
+    assert len(runner.calls) == calls_before
 
 
 def test_controller_session_id_mismatch_is_rejected(tmp_path: Path) -> None:
