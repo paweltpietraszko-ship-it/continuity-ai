@@ -121,6 +121,16 @@ class Vault:
         env=json.loads(self.path.read_text("utf-8")); salt=_ub64(env["salt"])
         _write(self.path,_encrypt(candidate, bytes(session.key_buffer), salt))
         self.payload=candidate
+    def save_analysis_revision(self, proposal_id: str) -> None:
+        '''Transactionally persist a confirmed analysis revision marker.'''
+        session=self.require()
+        candidate=dict(self.payload)
+        candidate['saved_analyses'] = list(
+            self.payload['saved_analyses']
+        ) + [{'proposal_id': proposal_id}]
+        env=json.loads(self.path.read_text('utf-8')); salt=_ub64(env['salt'])
+        _write(self.path,_encrypt(candidate, bytes(session.key_buffer), salt))
+        self.payload=candidate
     def save_approved_source_scope(self, scope: ApprovedSourceScope) -> None:
         """Transactionally persist a validated human-approved source scope."""
         session=self.require()

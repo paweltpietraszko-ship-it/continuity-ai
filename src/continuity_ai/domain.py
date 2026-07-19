@@ -64,8 +64,18 @@ class AnalysisResult:
     schema_version: str; analysis_status: Status; continuity_break_kind: BreakKind | None; current_state: GroundedStatement; semantic_annotations: tuple[SemanticAnnotation, ...]; continuity_break: GroundedStatement | None; next_action: GroundedStatement | None; project_report: ProjectReport
 
 @dataclass(frozen=True)
+class AnalysisRevisionContextBinding:
+    schema_version: Literal["1.0"]
+    sha256: str
+
+
+@dataclass(frozen=True)
 class AnalysisRevisionProposal:
-    proposal_id: str; candidate: AnalysisResult; session_id: str; created_at: str
+    proposal_id: str
+    candidate: AnalysisResult
+    session_id: str
+    created_at: str
+    context_binding: AnalysisRevisionContextBinding
 
 @dataclass(frozen=True)
 class CitationCard:

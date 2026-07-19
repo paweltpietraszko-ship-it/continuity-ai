@@ -2,9 +2,10 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from continuity_ai import conversation
-from continuity_ai.domain import AuthenticatedUserAttestation, SavedAnalysis
+from continuity_ai.analysis_revision import build_analysis_revision_context_binding
+from continuity_ai.domain import AnalysisRevisionProposal, AuthenticatedUserAttestation, SavedAnalysis
 from continuity_ai.errors import PublicError, ProjectMismatchError, ValidationError, VaultLockedError
 from continuity_ai.evidence import artifact_to_reasoning, attestation_to_reasoning, order_evidence, build_spans, content_sha256, hydrate_citations, hydrate_snapshot_citations, snapshot_citation_statuses
 from continuity_ai.ingestion import ingest_artifacts, read_project_name
@@ -194,6 +195,9 @@ class Bridge:
                 vault=self.vault,
                 revision_candidate=revision_candidate,
                 project_only=scoped,
+                target_project=self.project,
+                source_scoping_status=self.source_scoping.status,
+                approved_source_scope=self.source_scoping.approved_scope,
             )
 
         if name == "confirm_attestation":
@@ -222,9 +226,19 @@ class Bridge:
         if name == "confirm_analysis_revision":
             if self.vault is None:
                 raise VaultLockedError()
-            _, _, _ = self._prepare_downstream_project_evidence()
             proposal_id = cmd["proposal_id"]
-            result = conversation.confirm_analysis_revision(self.vault, proposal_id)
+            current_context_binding = build_analysis_revision_context_binding(
+                self.vault,
+                target_project=self.project,
+                source_scoping_status=self.source_scoping.status,
+                approved_source_scope=self.source_scoping.approved_scope,
+                records=self.records,
+            )
+            result = conversation.confirm_analysis_revision(
+                self.vault,
+                proposal_id,
+                current_context_binding,
+            )
             self.analysis = result
             cards = hydrate_citations(_citation_span_ids(result), self.records, self.spans)
             return {"confirmed": True, "proposal_id": proposal_id, "citation_cards": cards, **_analysis_fields(result)}
@@ -407,7 +421,14 @@ def _snapshot_fields(snapshot) -> dict:
 
 def _ser(v):
     if is_dataclass(v):
-        return asdict(v)
+        return {
+            field.name: _ser(getattr(v, field.name))
+            for field in fields(v)
+            if not (
+                isinstance(v, AnalysisRevisionProposal)
+                and field.name == 'context_binding'
+            )
+        }
     if isinstance(v, tuple):
         return [_ser(x) for x in v]
     if isinstance(v, dict):
