@@ -14,6 +14,8 @@ from continuity_ai.source_scoping.prompts import (
 
 MODEL_ENVIRONMENT_VARIABLE = "CONTINUITY_SOURCE_SCOPING_OPENAI_MODEL"
 REQUEST_SCHEMA_VERSION = "1.0"
+_ALLOWED_OUTPUT_ITEM_TYPES = frozenset({"message", "reasoning"})
+_ALLOWED_MESSAGE_CONTENT_TYPES = frozenset({"output_text", "refusal"})
 
 
 def build_request_document(
@@ -53,19 +55,36 @@ def serialize_request_document(target_project: str, evidence: Any, spans: Any) -
     )
 
 
-def _response_has_refusal(response: Any) -> bool:
-    if getattr(response, "refusal", None):
-        return True
-    for output_item in getattr(response, "output", ()) or ():
-        if getattr(output_item, "type", None) != "message":
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _validate_response_output(response: Any) -> None:
+    """Reject refusals and every executable or unknown response output item."""
+    if _field(response, "refusal"):
+        raise ProviderError()
+
+    output = _field(response, "output", ()) or ()
+    if not isinstance(output, (list, tuple)):
+        raise ProviderError()
+    for output_item in output:
+        item_type = _field(output_item, "type")
+        if item_type not in _ALLOWED_OUTPUT_ITEM_TYPES:
+            raise ProviderError()
+        if item_type == "reasoning":
             continue
-        for content_item in getattr(output_item, "content", ()) or ():
-            if (
-                getattr(content_item, "type", None) == "refusal"
-                or getattr(content_item, "refusal", None)
-            ):
-                return True
-    return False
+
+        content = _field(output_item, "content", ()) or ()
+        if not isinstance(content, (list, tuple)):
+            raise ProviderError()
+        for content_item in content:
+            content_type = _field(content_item, "type")
+            if content_type not in _ALLOWED_MESSAGE_CONTENT_TYPES:
+                raise ProviderError()
+            if content_type == "refusal" or _field(content_item, "refusal"):
+                raise ProviderError()
 
 
 class OpenAISourceScopingProvider:
@@ -113,12 +132,10 @@ class OpenAISourceScopingProvider:
             raise ProviderError() from None
 
         try:
-            if (
-                getattr(response, "status", None) != "completed"
-                or _response_has_refusal(response)
-            ):
+            if _field(response, "status") != "completed":
                 raise ProviderError()
-            output_text = response.output_text
+            _validate_response_output(response)
+            output_text = _field(response, "output_text")
             if not isinstance(output_text, str) or not output_text.strip():
                 raise ProviderError()
             parsed = json.loads(output_text)
