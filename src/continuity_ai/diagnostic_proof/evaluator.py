@@ -16,6 +16,7 @@ from continuity_ai.codex_process import workspace_fingerprint
 from continuity_ai.diagnostic_proof.models import (
     CompletedDiagnosticRun,
     DiagnosticClaim,
+    DiagnosticEvaluationWorkspace,
     DiagnosticProofArtifacts,
     DiagnosticProofReport,
 )
@@ -37,37 +38,40 @@ class DiagnosticEvaluationError(RuntimeError):
 
 def evaluate_completed_diagnostic_run(
     completed: CompletedDiagnosticRun,
-    oracle_root: Path,
+    evaluation: DiagnosticEvaluationWorkspace,
 ) -> DiagnosticProofReport:
-    """Evaluate a completed engine run; oracle access begins only here."""
+    """Evaluate only a verified post-engine regeneration."""
 
     if not isinstance(completed, CompletedDiagnosticRun):
         raise DiagnosticEvaluationError("A completed diagnostic run is required.")
-    oracle = Path(oracle_root).resolve(strict=True)
+    if not isinstance(evaluation, DiagnosticEvaluationWorkspace):
+        raise DiagnosticEvaluationError("A regenerated evaluation workspace is required.")
+    oracle = evaluation.oracle_root.resolve(strict=True)
     input_root = completed.input_root.resolve(strict=True)
-    evaluation_root = oracle.parent.resolve(strict=True)
-    generated_input_root = (evaluation_root / "input").resolve(strict=True)
+    evaluation_root = evaluation.evaluation_root.resolve(strict=True)
+    generated_input_root = evaluation.generated_input_root.resolve(strict=True)
     if (
         oracle.name != "oracle"
         or input_root.name != "input"
         or generated_input_root.name != "input"
-        or generated_input_root.parent != oracle.parent
+        or oracle.parent != evaluation_root
+        or generated_input_root.parent != evaluation_root
         or oracle == input_root
         or oracle.is_relative_to(input_root)
         or input_root.is_relative_to(oracle)
         or input_root.is_relative_to(evaluation_root)
         or evaluation_root.is_relative_to(input_root)
-        or (input_root.parent / "oracle").exists()
-        or is_unsafe_link(input_root.parent / "oracle")
     ):
         raise DiagnosticEvaluationError(
-            "Standalone engine input is not physically isolated from the oracle."
+            "Regenerated evaluation and standalone engine input are not isolated."
         )
 
     submission = _classification_submission(completed)
     oracle_evaluation = evaluate_generated_run(evaluation_root, submission)
     metadata = load_run_metadata(oracle / "metadata.json")
-    diagnostic_claims = _diagnostic_claims(completed, oracle)
+    if metadata.seed != evaluation.seed:
+        raise DiagnosticEvaluationError("Regenerated oracle seed does not match controller state.")
+    diagnostic_claims = _diagnostic_claims(completed, evaluation)
     oracle_claims = tuple(
         DiagnosticClaim(claim.name, claim.status, claim.observed, claim.expected)
         for claim in oracle_evaluation.claims
@@ -197,10 +201,11 @@ def _classification_submission(completed: CompletedDiagnosticRun) -> Classificat
 
 
 def _diagnostic_claims(
-    completed: CompletedDiagnosticRun, oracle_root: Path
+    completed: CompletedDiagnosticRun,
+    evaluation: DiagnosticEvaluationWorkspace,
 ) -> tuple[DiagnosticClaim, ...]:
-    evaluation_root = oracle_root.parent
-    generated_input_root = evaluation_root / "input"
+    evaluation_root = evaluation.evaluation_root
+    generated_input_root = evaluation.generated_input_root
     try:
         input_unchanged = (
             workspace_fingerprint(completed.input_root) == completed.input_fingerprint
@@ -234,23 +239,28 @@ def _diagnostic_claims(
         len(observed_report_paths) == len(set(observed_report_paths))
         and tuple(sorted(observed_report_paths)) == expected_report_paths
     )
-    engine_input_parent_oracle = completed.input_root.parent / "oracle"
     isolated = (
         not completed.input_root.is_relative_to(evaluation_root)
         and not evaluation_root.is_relative_to(completed.input_root)
-        and not engine_input_parent_oracle.exists()
-        and not is_unsafe_link(engine_input_parent_oracle)
+    )
+    oracle_absent_during_engine = (
+        completed.oracle_absent_during_engine_execution
+        and evaluation.oracle_absent_before_regeneration
     )
     try:
+        current_input_fingerprint = workspace_fingerprint(completed.input_root)
+        current_generated_fingerprint = workspace_fingerprint(generated_input_root)
         input_matches_generated = (
-            workspace_fingerprint(completed.input_root)
-            == workspace_fingerprint(generated_input_root)
+            current_input_fingerprint == current_generated_fingerprint
+            and current_input_fingerprint == evaluation.preparation_input_fingerprint
+            and current_generated_fingerprint == evaluation.regenerated_input_fingerprint
         )
     except Exception:
         input_matches_generated = False
     return (
         _claim("INPUT_FINGERPRINT_UNCHANGED", input_unchanged, completed.input_fingerprint, "unchanged"),
-        _claim("ENGINE_INPUT_PHYSICALLY_ISOLATED_FROM_ORACLE", isolated, str(completed.input_root), "outside evaluation root with no ../oracle"),
+        _claim("ENGINE_INPUT_PHYSICALLY_ISOLATED_FROM_ORACLE", isolated, str(completed.input_root), "separate from post-engine evaluation tree"),
+        _claim("ORACLE_ABSENT_DURING_ENGINE_EXECUTION", oracle_absent_during_engine, str(oracle_absent_during_engine).lower(), "true"),
         _claim("ENGINE_INPUT_MATCHES_GENERATED_INPUT", input_matches_generated, str(input_matches_generated).lower(), "true"),
         _claim("SAME_CODEX_SESSION_ID", same_codex, completed.reporting_codex_session_id, completed.investigation_codex_session_id),
         _claim("APPROVED_WORKSPACE_FINGERPRINT_MATCH", approved_fingerprint_ok, str(approved_fingerprint_ok).lower(), "true"),

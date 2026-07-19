@@ -11,13 +11,26 @@ from continuity_ai.unseen_workspace.models import EvaluationReport, ProofStatus
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticWorkspace:
-    """Controller roots; only standalone ``input_root`` crosses into the engine."""
+    """Controller state; only standalone ``input_root`` crosses into the engine."""
+
+    run_root: Path
+    engine_root: Path
+    input_root: Path
+    seed: int
+    generated_input_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticEvaluationWorkspace:
+    """Fresh post-engine regeneration accepted by the independent evaluator."""
 
     evaluation_root: Path
     generated_input_root: Path
-    engine_root: Path
-    input_root: Path
     oracle_root: Path
+    seed: int
+    preparation_input_fingerprint: str
+    regenerated_input_fingerprint: str
+    oracle_absent_before_regeneration: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +39,7 @@ class CompletedDiagnosticRun:
 
     input_root: Path
     input_fingerprint: str
+    oracle_absent_during_engine_execution: bool
     approved_workspace_root: Path
     controller_session_id: str
     investigation_codex_session_id: str

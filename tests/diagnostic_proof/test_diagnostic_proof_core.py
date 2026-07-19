@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -18,10 +19,11 @@ from continuity_ai.diagnostic_proof import (
     apply_controlled_workspace_tamper,
     evaluate_completed_diagnostic_run,
     prepare_diagnostic_workspace,
+    regenerate_diagnostic_evaluation,
     run_diagnostic_engine,
     write_diagnostic_reports,
 )
-from continuity_ai.unseen_workspace import load_workspace
+from continuity_ai.unseen_workspace import generate_unseen_workspace, load_workspace
 from continuity_ai.unseen_workspace.models import ProofStatus
 
 THREAD_ID = "12345678-1234-5678-9234-567812345678"
@@ -30,13 +32,18 @@ THREAD_ID = "12345678-1234-5678-9234-567812345678"
 @dataclass
 class ScriptedRunner:
     responses: list[str]
+    diagnostic_run_root: Path
 
     def __post_init__(self) -> None:
         self.calls: list[tuple[list[str], dict[str, object]]] = []
+        self.oracle_absent_at_launch: list[bool] = []
 
     def __call__(
         self, command: list[str], **options: object
     ) -> subprocess.CompletedProcess[str]:
+        oracle_absent = _oracle_artifacts_absent(self.diagnostic_run_root)
+        self.oracle_absent_at_launch.append(oracle_absent)
+        assert oracle_absent
         self.calls.append((list(command), dict(options)))
         response = self.responses[len(self.calls) - 1]
         response_path = Path(command[command.index("--output-last-message") + 1])
@@ -56,6 +63,13 @@ def _controller(tmp_path: Path, runner: ScriptedRunner) -> CodexSessionControlle
         process_runner=runner,
     )
     return CodexSessionController(JsonSessionStore(tmp_path / "sessions.json"), adapter)
+
+
+def _oracle_artifacts_absent(run_root: Path) -> bool:
+    return not any(
+        path.name.casefold() in {"oracle", "expected_scope.json"}
+        for path in run_root.rglob("*")
+    )
 
 
 def _oracle_statuses(oracle_root: Path) -> dict[str, str]:
@@ -131,16 +145,26 @@ def _review_ambiguities(result) -> dict[str, str]:
     return {evidence_id: "excluded" for evidence_id in result.ambiguous_evidence_ids}
 
 
-def _run(tmp_path: Path, seed: int):
+def _scripted_responses(tmp_path: Path, workspace) -> list[str]:
+    controller_evaluation_root = tmp_path / "scripted-controller-evaluation"
+    generated = generate_unseen_workspace(controller_evaluation_root, workspace.seed)
+    generated_input = Path(str(generated["input_root"])).resolve(strict=True)
+    oracle_root = Path(str(generated["oracle_root"])).resolve(strict=True)
+    assert workspace_fingerprint(generated_input) == workspace.generated_input_fingerprint
+    responses = [
+        _classification_payload(generated_input, oracle_root),
+        json.dumps({"relative_paths": _approved_paths(generated_input, oracle_root)}),
+    ]
+    shutil.rmtree(controller_evaluation_root)
+    assert not controller_evaluation_root.exists()
+    return responses
+
+
+def _execute_engine(tmp_path: Path, seed: int):
     workspace = prepare_diagnostic_workspace(tmp_path / "generated", seed)
-    runner = ScriptedRunner(
-        [
-            _classification_payload(workspace.input_root, workspace.oracle_root),
-            json.dumps(
-                {"relative_paths": _approved_paths(workspace.input_root, workspace.oracle_root)}
-            ),
-        ]
-    )
+    responses = _scripted_responses(tmp_path, workspace)
+    assert _oracle_artifacts_absent(workspace.run_root)
+    runner = ScriptedRunner(responses, workspace.run_root)
     completed = run_diagnostic_engine(
         _controller(tmp_path, runner),
         workspace.input_root,
@@ -148,13 +172,21 @@ def _run(tmp_path: Path, seed: int):
         _review_ambiguities,
         timeout_seconds=30,
     )
+    assert completed.oracle_absent_during_engine_execution
+    assert _oracle_artifacts_absent(workspace.run_root)
     return workspace, runner, completed
+
+
+def _run(tmp_path: Path, seed: int):
+    workspace, runner, completed = _execute_engine(tmp_path, seed)
+    evaluation = regenerate_diagnostic_evaluation(workspace, completed)
+    return workspace, evaluation, runner, completed
 
 
 @pytest.mark.parametrize("seed", [7, 314159, -90210])
 def test_multiple_seeds_produce_complete_passing_proofs(tmp_path: Path, seed: int) -> None:
-    workspace, runner, completed = _run(tmp_path, seed)
-    report = evaluate_completed_diagnostic_run(completed, workspace.oracle_root)
+    workspace, evaluation, runner, completed = _run(tmp_path, seed)
+    report = evaluate_completed_diagnostic_run(completed, evaluation)
 
     assert report.seed == seed
     assert report.result is ProofStatus.PASS
@@ -164,9 +196,9 @@ def test_multiple_seeds_produce_complete_passing_proofs(tmp_path: Path, seed: in
     assert completed.investigation_codex_session_id == THREAD_ID
     assert completed.reporting_codex_session_id == THREAD_ID
     assert len(runner.calls) == 2
+    assert runner.oracle_absent_at_launch == [True, True]
     assert runner.calls[0][1]["cwd"] == workspace.input_root
     assert runner.calls[1][1]["cwd"] == completed.approved_workspace_root.resolve()
-    assert str(workspace.oracle_root) not in " ".join(runner.calls[0][0])
 
     claims = {claim.name: claim.status for claim in report.claims}
     assert claims["EXACT_PARTITION_INTEGRITY"] is ProofStatus.PASS
@@ -175,36 +207,43 @@ def test_multiple_seeds_produce_complete_passing_proofs(tmp_path: Path, seed: in
     assert claims["SAME_CODEX_SESSION_ID"] is ProofStatus.PASS
     assert claims["ENGINE_INPUT_PHYSICALLY_ISOLATED_FROM_ORACLE"] is ProofStatus.PASS
     assert claims["ENGINE_INPUT_MATCHES_GENERATED_INPUT"] is ProofStatus.PASS
+    assert claims["ORACLE_ABSENT_DURING_ENGINE_EXECUTION"] is ProofStatus.PASS
 
 
-def test_oracle_is_not_present_or_nested_in_engine_root(tmp_path: Path) -> None:
-    workspace = prepare_diagnostic_workspace(tmp_path / "generated", 101)
+def test_oracle_is_absent_before_and_during_engine_then_regenerated(
+    tmp_path: Path,
+) -> None:
+    workspace, runner, completed = _execute_engine(tmp_path, 101)
 
-    assert workspace.generated_input_root.parent == workspace.oracle_root.parent
-    assert workspace.generated_input_root.parent == workspace.evaluation_root
+    assert {path.name for path in workspace.run_root.iterdir()} == {"engine"}
     assert workspace.input_root.parent == workspace.engine_root
-    assert not workspace.input_root.is_relative_to(workspace.evaluation_root)
-    assert not workspace.evaluation_root.is_relative_to(workspace.input_root)
-    assert workspace.input_root != workspace.oracle_root
-    assert not workspace.oracle_root.is_relative_to(workspace.input_root)
-    assert not workspace.input_root.is_relative_to(workspace.oracle_root)
-    assert not (workspace.input_root.parent / "oracle").exists()
-    assert not (workspace.input_root / "../oracle").exists()
-    assert {path.name for path in workspace.input_root.iterdir()} == {
-        "workspace.json",
-        "records",
-    }
-    engine_bytes = b"".join(
-        path.read_bytes().lower() for path in workspace.input_root.rglob("*") if path.is_file()
+    assert workspace.seed == 101
+    assert workspace.generated_input_fingerprint == workspace_fingerprint(
+        workspace.input_root
     )
-    assert b'"expected_status"' not in engine_bytes
-    assert b'"seed"' not in engine_bytes
+    assert _oracle_artifacts_absent(workspace.run_root)
+    assert runner.oracle_absent_at_launch == [True, True]
+    run_bytes = b"".join(
+        path.read_bytes().lower()
+        for path in workspace.run_root.rglob("*")
+        if path.is_file()
+    )
+    assert b"\"expected_status\"" not in run_bytes
+    assert b"\"seed\"" not in run_bytes
+
+    evaluation = regenerate_diagnostic_evaluation(workspace, completed)
+
+    assert evaluation.oracle_root.is_dir()
+    assert (evaluation.oracle_root / "metadata.json").is_file()
+    assert evaluation.oracle_absent_before_regeneration
+    assert evaluation.regenerated_input_fingerprint == workspace.generated_input_fingerprint
+    assert _snapshot(evaluation.generated_input_root) == _snapshot(workspace.input_root)
 
 
 def test_excluded_artifacts_are_physically_absent_from_approved_workspace(
     tmp_path: Path,
 ) -> None:
-    _, _, completed = _run(tmp_path, 202)
+    _, _, _, completed = _run(tmp_path, 202)
     path_by_id = dict(completed.evidence_paths)
 
     for evidence_id in completed.excluded_evidence_ids:
@@ -220,43 +259,46 @@ def test_excluded_artifacts_are_physically_absent_from_approved_workspace(
 
 
 def test_controlled_post_completion_tamper_produces_fail(tmp_path: Path) -> None:
-    workspace, _, completed = _run(tmp_path, 303)
+    _, evaluation, _, completed = _run(tmp_path, 303)
     changed = apply_controlled_workspace_tamper(completed)
 
-    report = evaluate_completed_diagnostic_run(completed, workspace.oracle_root)
+    report = evaluate_completed_diagnostic_run(completed, evaluation)
 
     assert changed.is_file()
     assert report.result is ProofStatus.FAIL
     claims = {claim.name: claim.status for claim in report.claims}
     assert claims["APPROVED_WORKSPACE_FINGERPRINT_MATCH"] is ProofStatus.FAIL
     assert claims["APPROVED_WORKSPACE_EXACT_PARTITION"] is ProofStatus.FAIL
+    assert claims["ORACLE_ABSENT_DURING_ENGINE_EXECUTION"] is ProofStatus.PASS
 
 
-def test_same_seed_has_identical_standalone_input(tmp_path: Path) -> None:
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_same_seed_has_identical_standalone_input_without_oracle(tmp_path: Path) -> None:
     first = prepare_diagnostic_workspace(tmp_path / "first", 404)
     second = prepare_diagnostic_workspace(tmp_path / "second", 404)
 
-    def snapshot(root: Path) -> dict[str, bytes]:
-        return {
-            path.relative_to(root).as_posix(): path.read_bytes()
-            for path in root.rglob("*")
-            if path.is_file()
-        }
-
-    assert snapshot(first.input_root) == snapshot(second.input_root)
-    assert snapshot(first.input_root) == snapshot(first.generated_input_root)
-    assert snapshot(second.input_root) == snapshot(second.generated_input_root)
+    assert _snapshot(first.input_root) == _snapshot(second.input_root)
+    assert first.generated_input_fingerprint == second.generated_input_fingerprint
     assert workspace_fingerprint(first.input_root) == workspace_fingerprint(second.input_root)
+    assert _oracle_artifacts_absent(first.run_root)
+    assert _oracle_artifacts_absent(second.run_root)
 
 
-def test_evaluator_detects_engine_input_diverging_from_generated_input(
+def test_evaluator_detects_engine_input_diverging_from_regenerated_input(
     tmp_path: Path,
 ) -> None:
-    workspace, _, completed = _run(tmp_path, 405)
-    generated_record = next((workspace.generated_input_root / "records").iterdir())
+    _, evaluation, _, completed = _run(tmp_path, 405)
+    generated_record = next((evaluation.generated_input_root / "records").iterdir())
     generated_record.write_bytes(generated_record.read_bytes() + b"\nCONTROLLER-ONLY-TAMPER\n")
 
-    report = evaluate_completed_diagnostic_run(completed, workspace.oracle_root)
+    report = evaluate_completed_diagnostic_run(completed, evaluation)
 
     claims = {claim.name: claim.status for claim in report.claims}
     assert report.result is ProofStatus.FAIL
@@ -264,8 +306,8 @@ def test_evaluator_detects_engine_input_diverging_from_generated_input(
 
 
 def test_json_and_markdown_record_required_identity_and_claims(tmp_path: Path) -> None:
-    workspace, _, completed = _run(tmp_path, 505)
-    report = evaluate_completed_diagnostic_run(completed, workspace.oracle_root)
+    _, evaluation, _, completed = _run(tmp_path, 505)
+    report = evaluate_completed_diagnostic_run(completed, evaluation)
     artifacts = write_diagnostic_reports(report, tmp_path / "proof")
 
     payload = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
