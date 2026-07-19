@@ -6,24 +6,19 @@ from typing import Any
 from continuity_ai.errors import ValidationError
 from continuity_ai.source_scoping.domain import (
     APPROVED_SOURCE_SCOPE_FIELDS,
-    ASSOCIATION_STATUSES,
-    DECISION_BASES,
     REVIEWED_SOURCE_DECISION_FIELDS,
     ApprovedSourceScope,
     ReviewedSourceDecision,
     SCHEMA_VERSION,
 )
+from continuity_ai.source_scoping.validation_graph import (
+    validate_context_graph,
+    validate_decision_relations,
+)
 
 _SCOPE_KEYS = frozenset(APPROVED_SOURCE_SCOPE_FIELDS)
 _DECISION_KEYS = frozenset(REVIEWED_SOURCE_DECISION_FIELDS)
 _FINAL_STATUSES = frozenset({"included", "excluded"})
-_ALLOWED_BASIS_BY_MODEL_STATUS = {
-    "included": frozenset({"explicit_target", "corroborated_context"}),
-    "excluded": frozenset(
-        {"explicit_other_project", "corroborated_other_project"}
-    ),
-    "ambiguous": frozenset({"conflicting_context", "insufficient_context"}),
-}
 
 
 def _decision_to_payload(decision: ReviewedSourceDecision) -> dict[str, Any]:
@@ -84,12 +79,6 @@ def _reviewed_decisions(value: Any) -> tuple[ReviewedSourceDecision, ...]:
         rationale = raw["rationale"]
         if final_status not in _FINAL_STATUSES:
             raise ValidationError()
-        if model_status not in ASSOCIATION_STATUSES:
-            raise ValidationError()
-        if basis not in DECISION_BASES:
-            raise ValidationError()
-        if basis not in _ALLOWED_BASIS_BY_MODEL_STATUS[model_status]:
-            raise ValidationError()
         if not isinstance(rationale, str) or not rationale.strip():
             raise ValidationError()
 
@@ -97,10 +86,17 @@ def _reviewed_decisions(value: Any) -> tuple[ReviewedSourceDecision, ...]:
         related_evidence_ids = _string_sequence(raw["related_evidence_ids"])
         if evidence_id in related_evidence_ids:
             raise ValidationError()
+        validate_decision_relations(
+            model_status,
+            basis,
+            related_evidence_ids,
+        )
+
         user_overridden = raw["user_overridden"]
         if not isinstance(user_overridden, bool):
             raise ValidationError()
-        if model_status == "ambiguous" and not user_overridden:
+        expected_user_overridden = final_status != model_status
+        if user_overridden != expected_user_overridden:
             raise ValidationError()
 
         seen.add(evidence_id)
@@ -123,7 +119,9 @@ def _reviewed_decisions(value: Any) -> tuple[ReviewedSourceDecision, ...]:
         for related in decision.related_evidence_ids
     ):
         raise ValidationError()
-    return tuple(decisions)
+    result = tuple(decisions)
+    validate_context_graph(result)
+    return result
 
 
 def _fingerprints(
