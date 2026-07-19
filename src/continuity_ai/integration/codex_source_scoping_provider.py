@@ -20,10 +20,14 @@ passes the controller the canonical `validate_source_scoping_payload` as its
 `structured_output_validator`, so the controller rejects such a payload
 *before* committing any success (phase transition, retained Codex session id,
 successful receipt) rather than after — see VG-01 in
-`docs/audits/VERTICAL_GLUE_BOUNDED_REVIEW.md`. `run_source_scoping` still
-performs its own canonical validation independently after this provider
-returns, as defense in depth; the semantic check is not moved into the
-controller, only invoked by it as an injected, narrow hook.
+`docs/audits/VERTICAL_GLUE_BOUNDED_REVIEW.md` and the follow-up re-audit in
+`docs/audits/VERTICAL_GLUE_VG01_REAUDIT.md`. The hook is rejection-only: it
+calls `validate_source_scoping_payload` for its side effect (raising on
+rejection) and returns nothing, so it can never widen or replace the
+schema-valid payload the controller already parsed. `run_source_scoping`
+still performs its own canonical validation independently after this
+provider returns, as defense in depth; the semantic check is not moved into
+the controller, only invoked by it as an injected, narrow hook.
 
 The Source Scoping response schema is designed for the OpenAI Responses API
 and uses `maxLength`, a keyword the controller's own output-schema boundary
@@ -94,9 +98,8 @@ class CodexSourceScopingProvider:
         evidence: tuple[Any, ...],
         spans: tuple[Any, ...],
     ) -> dict[str, Any]:
-        def _validate_semantic(payload: object) -> object:
+        def _validate_semantic(payload: object) -> None:
             validate_source_scoping_payload(payload, target_project, evidence, spans)
-            return payload
 
         request = CodexOperationRequest(
             _build_prompt(target_project, evidence, spans),

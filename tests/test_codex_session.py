@@ -695,9 +695,9 @@ def test_semantic_validator_accepting_payload_still_commits_investigating_with_r
     created = controller.create_session(root)
     calls: list[object] = []
 
-    def accept(value: object) -> object:
+    def accept(value: object) -> None:
         calls.append(value)
-        return value
+        return None
 
     result = controller.start_investigation(
         created.controller_session_id,

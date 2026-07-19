@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import sys
@@ -245,12 +246,16 @@ class CodexOperationRequest:
     output_schema: Mapping[str, object]
     timeout_seconds: float = 300.0
     # Narrow, optional, runtime-only semantic check on the JSON-Schema-valid
-    # structured output. It runs strictly before any success is committed
-    # (before the phase transition, the retained Codex ID, and the successful
-    # receipt): raising or rejecting is treated exactly like an invalid-output
-    # failure. It never widens what JSON Schema already validated; it may
-    # only reject or return an equivalent/normalized value on success.
-    structured_output_validator: Callable[[object], object] | None = None
+    # structured output. It is rejection-only: it must return exactly `None`
+    # to accept, and raising (or returning anything else) is treated exactly
+    # like an invalid-output failure, strictly before any success is
+    # committed (before the phase transition, the retained Codex ID, and the
+    # successful receipt). It is called on a deep copy of the structured
+    # output, never the object itself, so it cannot widen, normalize, or
+    # otherwise alter what JSON Schema already validated — not even by
+    # mutating its argument in place. On success the controller always
+    # publishes the original, untouched, schema-valid object.
+    structured_output_validator: Callable[[object], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -1394,15 +1399,27 @@ class CodexSessionController:
                         # same way as any other invalid output, strictly
                         # before any success is committed below, and never
                         # propagate the validator's own exception or the
-                        # evidence it inspected.
+                        # evidence it inspected. The validator is rejection
+                        # only: it runs against a deep copy so it can never
+                        # widen or alter `structured` (not even by mutating
+                        # its argument in place), and it must return exactly
+                        # `None` to accept; any other return value is treated
+                        # as a rejection. `structured` itself is never
+                        # reassigned here, so only the original, already
+                        # schema-valid object is ever published.
                         try:
-                            structured = request.structured_output_validator(
-                                structured
+                            outcome = request.structured_output_validator(
+                                copy.deepcopy(structured)
                             )
                         except Exception:
                             category = FailureCategory.INVALID_OUTPUT
                             structured_valid = False
                             structured = None
+                        else:
+                            if outcome is not None:
+                                category = FailureCategory.INVALID_OUTPUT
+                                structured_valid = False
+                                structured = None
             if (
                 category is None
                 and resume_session_id is not None
