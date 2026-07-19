@@ -7,15 +7,17 @@ generated-run path other than the validated input root.
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import subprocess
-import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Sequence
+
+from continuity_ai.codex_process import (
+    CodexCliProcessAdapter,
+    CodexInvocationRequest,
+    ProcessRunner,
+)
 
 from continuity_ai.unseen_workspace.evaluation_contracts import (
     ScopeEvaluationError,
@@ -39,31 +41,6 @@ _AGENT_STATUSES = {
     "EXCLUDE": ScopeStatus.EXCLUDE,
     "DEFER": ScopeStatus.DEFER,
 }
-_ENVIRONMENT_ALLOWLIST = (
-    "APPDATA",
-    "CODEX_HOME",
-    "COMSPEC",
-    "HOME",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "LOCALAPPDATA",
-    "NO_PROXY",
-    "OPENAI_API_KEY",
-    "PATH",
-    "PATHEXT",
-    "REQUESTS_CA_BUNDLE",
-    "SSL_CERT_FILE",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "WINDIR",
-    "XDG_CONFIG_HOME",
-)
-
-ProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
-
-
 class CodexWorkspaceSpikeError(RuntimeError):
     """Raised when the isolated Codex classification cannot be trusted."""
 
@@ -75,14 +52,6 @@ class CodexWorkspaceSpikeArtifacts:
     classification_result: ClassificationResult
     classification_path: Path
     invocation_log_path: Path
-
-
-@dataclass(frozen=True)
-class _InputFileState:
-    sha256: str
-    size: int
-    modified_time_ns: int
-    mode: int
 
 
 def classify_workspace_with_codex(
@@ -114,7 +83,6 @@ def classify_workspace_with_codex(
     output_path, log_path = _validate_output_paths(
         workspace.input_root, Path(classification_result_path)
     )
-    before = _snapshot_input(workspace.input_root)
     evidence_ids = tuple(record.evidence_id for record in workspace.records)
     prompt = _build_prompt(
         workspace.target_project.project_id,
@@ -122,77 +90,49 @@ def classify_workspace_with_codex(
         evidence_ids,
     )
     schema = _build_agent_output_schema(evidence_ids)
-    environment = _codex_environment(workspace.input_root)
-    runner = process_runner or subprocess.run
-
-    completed: subprocess.CompletedProcess[str] | None = None
-    launch_error: OSError | subprocess.TimeoutExpired | None = None
-    final_response = ""
-    command: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="continuity-codex-spike-") as temp_name:
-        temporary_root = Path(temp_name).resolve()
-        schema_path = temporary_root / "classification.schema.json"
-        final_response_path = temporary_root / "final-response.json"
-        schema_path.write_text(
-            json.dumps(schema, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        command = _build_command(
-            executable,
-            workspace.input_root,
-            schema_path,
-            final_response_path,
-        )
-        try:
-            completed = runner(
-                command,
-                cwd=workspace.input_root,
-                env=environment,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=timeout_seconds,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            launch_error = exc
-
-        mutation_error = _input_mutation_error(workspace.input_root, before)
-        if final_response_path.is_file() and not is_unsafe_link(final_response_path):
-            try:
-                final_response = final_response_path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError):
-                final_response = ""
-
-        _write_invocation_log(
-            log_path,
-            command=command,
-            working_directory=workspace.input_root,
-            environment=environment,
+    adapter = CodexCliProcessAdapter.for_legacy_spike(
+        executable,
+        process_runner=process_runner,
+    )
+    result = adapter.invoke(
+        CodexInvocationRequest(
+            workspace_root=workspace.input_root,
             prompt=prompt,
-            schema=schema,
-            completed=completed,
-            launch_error=launch_error,
-            final_response=final_response,
-            input_unchanged=mutation_error is None,
+            output_schema=schema,
+            timeout_seconds=timeout_seconds,
+            ephemeral=True,
+            allow_api_key_environment=True,
+            excluded_environment_paths=(workspace.input_root.parent / "oracle",),
         )
+    )
+    mutation_error = _input_mutation_error(workspace.input_root, result.input_unchanged)
+    _write_invocation_log(
+        log_path,
+        command=result.command,
+        working_directory=workspace.input_root,
+        environment_keys=result.environment_keys,
+        prompt=prompt,
+        schema=schema,
+        exit_code=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        launch_error_type=result.launch_error_type,
+        final_response=result.final_response,
+        input_unchanged=mutation_error is None,
+    )
 
-        if mutation_error is not None:
-            raise mutation_error
-        if launch_error is not None:
-            if isinstance(launch_error, subprocess.TimeoutExpired):
-                raise CodexWorkspaceSpikeError("Codex invocation timed out.") from launch_error
-            raise CodexWorkspaceSpikeError(
-                "Codex process could not be launched."
-            ) from launch_error
-        if completed is None or completed.returncode != 0:
-            raise CodexWorkspaceSpikeError("Codex process exited unsuccessfully.")
-        if not final_response:
-            raise CodexWorkspaceSpikeError("Codex did not emit a structured final response.")
+    if mutation_error is not None:
+        raise mutation_error
+    if result.timed_out:
+        raise CodexWorkspaceSpikeError("Codex invocation timed out.")
+    if result.launch_error_type is not None:
+        raise CodexWorkspaceSpikeError("Codex process could not be launched.")
+    if result.returncode != 0:
+        raise CodexWorkspaceSpikeError("Codex process exited unsuccessfully.")
+    if not result.final_response:
+        raise CodexWorkspaceSpikeError("Codex did not emit a structured final response.")
 
-        payload = _classification_payload(final_response, evidence_ids)
+    payload = _classification_payload(result.final_response, evidence_ids)
 
     classification = _publish_classification(output_path, payload)
     return CodexWorkspaceSpikeArtifacts(
@@ -200,32 +140,6 @@ def classify_workspace_with_codex(
         classification_path=output_path,
         invocation_log_path=log_path,
     )
-
-
-def _build_command(
-    executable: str,
-    input_root: Path,
-    schema_path: Path,
-    final_response_path: Path,
-) -> list[str]:
-    return [
-        executable,
-        "exec",
-        "--sandbox",
-        "read-only",
-        "--cd",
-        str(input_root),
-        "--skip-git-repo-check",
-        "--ephemeral",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--output-schema",
-        str(schema_path),
-        "--output-last-message",
-        str(final_response_path),
-        "--json",
-        "-",
-    ]
 
 
 def _build_prompt(
@@ -372,55 +286,17 @@ def _validate_output_paths(input_root: Path, output_path: Path) -> tuple[Path, P
     return resolved, log_path
 
 
-def _codex_environment(
-    input_root: Path,
-    source: Mapping[str, str] | None = None,
-) -> dict[str, str]:
-    inherited = os.environ if source is None else source
-    hidden_sibling = str(input_root.parent / "oracle").casefold()
-    environment = {
-        key: inherited[key]
-        for key in _ENVIRONMENT_ALLOWLIST
-        if (
-            key in inherited
-            and inherited[key]
-            and hidden_sibling not in inherited[key].casefold()
-        )
-    }
-    environment["NO_COLOR"] = "1"
-    return environment
-
-
-def _snapshot_input(root: Path) -> dict[str, _InputFileState]:
-    snapshot: dict[str, _InputFileState] = {}
-    try:
-        for path in sorted(root.rglob("*")):
-            if path.is_file():
-                raw = path.read_bytes()
-                stat = path.stat()
-                snapshot[path.relative_to(root).as_posix()] = _InputFileState(
-                    sha256=hashlib.sha256(raw).hexdigest(),
-                    size=stat.st_size,
-                    modified_time_ns=stat.st_mtime_ns,
-                    mode=stat.st_mode,
-                )
-    except OSError as exc:
-        raise CodexWorkspaceSpikeError("Input snapshot could not be captured.") from exc
-    return snapshot
-
-
 def _input_mutation_error(
     root: Path,
-    before: dict[str, _InputFileState],
+    input_unchanged: bool,
 ) -> CodexWorkspaceSpikeError | None:
     try:
         load_workspace(root)
-        after = _snapshot_input(root)
-    except (RawWorkspaceIngestionError, CodexWorkspaceSpikeError):
+    except RawWorkspaceIngestionError:
         return CodexWorkspaceSpikeError(
             "Codex invocation changed or invalidated the input workspace."
         )
-    if after != before:
+    if not input_unchanged:
         return CodexWorkspaceSpikeError("Codex invocation changed the input workspace.")
     return None
 
@@ -430,11 +306,13 @@ def _write_invocation_log(
     *,
     command: Sequence[str],
     working_directory: Path,
-    environment: Mapping[str, str],
+    environment_keys: Sequence[str],
     prompt: str,
     schema: dict[str, object],
-    completed: subprocess.CompletedProcess[str] | None,
-    launch_error: BaseException | None,
+    exit_code: int | None,
+    stdout: str,
+    stderr: str,
+    launch_error_type: str | None,
     final_response: str,
     input_unchanged: bool,
 ) -> None:
@@ -442,14 +320,14 @@ def _write_invocation_log(
         "schema_version": 1,
         "command": list(command),
         "working_directory": str(working_directory),
-        "environment_keys": sorted(environment),
+        "environment_keys": sorted(environment_keys),
         "prompt": prompt,
         "output_schema": schema,
-        "exit_code": None if completed is None else completed.returncode,
-        "stdout": "" if completed is None else completed.stdout,
-        "stderr": "" if completed is None else completed.stderr,
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
         "final_response": final_response,
-        "launch_error_type": None if launch_error is None else type(launch_error).__name__,
+        "launch_error_type": launch_error_type,
         "input_unchanged": input_unchanged,
     }
     _write_json_atomically(path, payload, "Codex invocation log")
