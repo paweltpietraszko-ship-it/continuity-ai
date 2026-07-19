@@ -145,9 +145,17 @@ def test_revision_proposal_cannot_be_confirmed_twice(tmp_path: Path):
     records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")
     resp=send_message("update analysis", records, spans, vault=v, revision_candidate=candidate)
     proposal_id=resp.analysis_revision_proposal.proposal_id
-    confirm_analysis_revision(v, proposal_id)
+    confirm_analysis_revision(
+        v,
+        proposal_id,
+        resp.analysis_revision_proposal.context_binding,
+    )
     with pytest.raises(ValidationError):
-        confirm_analysis_revision(v, proposal_id)
+        confirm_analysis_revision(
+            v,
+            proposal_id,
+            resp.analysis_revision_proposal.context_binding,
+        )
 
 def test_revision_proposal_requires_unlocked_vault(tmp_path: Path):
     records=aurora(tmp_path); spans=build_spans(records); candidate=FakeAuroraProvider().analyze(records,spans,"q")

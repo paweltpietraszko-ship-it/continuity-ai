@@ -11,6 +11,7 @@ from continuity_ai.conversation import (
     confirm_analysis_revision,
     send_message,
 )
+from continuity_ai.domain import AnalysisRevisionContextBinding
 from continuity_ai.evidence import (
     artifact_to_reasoning,
     attestation_to_reasoning,
@@ -24,6 +25,15 @@ from continuity_ai.vault import Vault
 
 
 PASSWORD = 'secret'
+
+
+class ForgedEqualBinding:
+    def __eq__(self, other):
+        return True
+
+
+class BindingSubclass(AnalysisRevisionContextBinding):
+    pass
 
 
 def _records(tmp_path):
@@ -42,6 +52,20 @@ def _binding(vault, records):
         approved_source_scope=None,
         records=records,
     )
+
+
+def _proposal(vault, records):
+    spans = build_spans(records)
+    candidate = FakeAuroraProvider().analyze(records, spans, 'q')
+    response = send_message(
+        'Prepare this revision.',
+        records,
+        spans,
+        vault=vault,
+        revision_candidate=candidate,
+        target_project='Project Aurora',
+    )
+    return response.analysis_revision_proposal
 
 
 def test_binding_is_deterministic_and_covers_content_provenance_and_attestations(
@@ -115,6 +139,69 @@ def test_stale_content_rejection_is_atomic_and_does_not_persist(tmp_path):
     assert vault.pending_revisions[proposal.proposal_id] is proposal
     assert vault.payload == payload_before
     assert vault.path.read_bytes() == encrypted_before
+
+
+def test_invalid_supplied_binding_types_reject_without_mutation(tmp_path):
+    vault = Vault(tmp_path / 'invalid-supplied.vault')
+    vault.initialize('Owner', PASSWORD)
+    records = _records(tmp_path)
+    proposal = _proposal(vault, records)
+    valid = proposal.context_binding
+    invalid_bindings = (
+        None,
+        object(),
+        ForgedEqualBinding(),
+        BindingSubclass(valid.schema_version, valid.sha256),
+    )
+
+    for current_binding in invalid_bindings:
+        payload_before = copy.deepcopy(vault.payload)
+        encrypted_before = vault.path.read_bytes()
+        with pytest.raises(ValidationError):
+            confirm_analysis_revision(
+                vault,
+                proposal.proposal_id,
+                current_binding,
+            )
+        assert vault.pending_revisions[proposal.proposal_id] is proposal
+        assert vault.payload == payload_before
+        assert vault.path.read_bytes() == encrypted_before
+
+
+def test_malformed_stored_binding_rejects_without_mutation(tmp_path):
+    vault = Vault(tmp_path / 'invalid-stored.vault')
+    vault.initialize('Owner', PASSWORD)
+    records = _records(tmp_path)
+    proposal = _proposal(vault, records)
+    valid = proposal.context_binding
+    malformed_bindings = (
+        None,
+        object(),
+        BindingSubclass(valid.schema_version, valid.sha256),
+        AnalysisRevisionContextBinding('invalid', valid.sha256),
+        AnalysisRevisionContextBinding(valid.schema_version, 'invalid'),
+    )
+
+    for stored_binding in malformed_bindings:
+        malformed_proposal = replace(
+            proposal,
+            context_binding=stored_binding,
+        )
+        vault.pending_revisions[proposal.proposal_id] = malformed_proposal
+        payload_before = copy.deepcopy(vault.payload)
+        encrypted_before = vault.path.read_bytes()
+        with pytest.raises(ValidationError):
+            confirm_analysis_revision(
+                vault,
+                proposal.proposal_id,
+                valid,
+            )
+        assert (
+            vault.pending_revisions[proposal.proposal_id]
+            is malformed_proposal
+        )
+        assert vault.payload == payload_before
+        assert vault.path.read_bytes() == encrypted_before
 
 
 def test_unchanged_bound_proposal_confirms_and_persists(tmp_path):
