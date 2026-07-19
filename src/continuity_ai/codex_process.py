@@ -6,12 +6,15 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
+
+from continuity_ai.codex_operation import ProcessIdentity, capture_process_identity
 
 
 ProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -48,6 +51,21 @@ class CodexProcessBoundaryError(RuntimeError):
 
 class CodexWorkspaceChangedBeforeLaunch(CodexProcessBoundaryError):
     """The retained workspace fingerprint no longer matches before launch."""
+
+
+@dataclass(frozen=True)
+class CodexExecutableIdentity:
+    sha256: str
+    size: int
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
+class CodexInvocationLifecycle:
+    before_launch: Callable[[], None]
+    process_started: Callable[[ProcessIdentity], None]
+    process_completed: Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -189,6 +207,7 @@ class CodexInvocationRequest:
     allow_api_key_environment: bool = False
     excluded_environment_paths: tuple[Path, ...] = ()
     expected_workspace_fingerprint: str | None = None
+    lifecycle: CodexInvocationLifecycle | None = None
 
 
 @dataclass(frozen=True)
@@ -220,13 +239,17 @@ class CodexCliProcessAdapter:
         resolved_executable: Path,
         version: str,
         capabilities: CodexCliCapabilities,
+        executable_identity: CodexExecutableIdentity | None = None,
         process_runner: ProcessRunner | None = None,
     ) -> None:
         self.executable = executable
-        self.resolved_executable = resolved_executable
+        self.resolved_executable = Path(resolved_executable).resolve(strict=True)
         self.version = version
         self.capabilities = capabilities
-        self._runner = process_runner or subprocess.run
+        self.executable_identity = executable_identity or _executable_identity(
+            self.resolved_executable
+        )
+        self._runner = process_runner
 
     @classmethod
     def discover(
@@ -239,7 +262,8 @@ class CodexCliProcessAdapter:
         resolved_name = shutil.which(executable)
         if resolved_name is None:
             raise FileNotFoundError("Codex executable was not found.")
-        resolved = Path(resolved_name).resolve()
+        resolved = Path(resolved_name).resolve(strict=True)
+        identity = _executable_identity(resolved)
 
         def inspect(*arguments: str) -> str:
             completed = runner(
@@ -270,11 +294,16 @@ class CodexCliProcessAdapter:
             resume_read_only_sandbox="--sandbox" in top_help,
             resume_verified=version in _VERIFIED_RESUME_VERSIONS,
         )
+        if _executable_identity(resolved) != identity:
+            raise CodexProcessBoundaryError(
+                "Codex executable changed during capability discovery."
+            )
         return cls(
             executable,
             resolved_executable=resolved,
             version=version,
             capabilities=capabilities,
+            executable_identity=identity,
             process_runner=process_runner,
         )
 
@@ -285,14 +314,18 @@ class CodexCliProcessAdapter:
         *,
         process_runner: ProcessRunner | None = None,
     ) -> "CodexCliProcessAdapter":
-        """Keep the spike's command-name resolution and injected runner contract."""
+        """Keep dynamic discovery and the spike's injected-runner contract."""
 
-        resolved_name = shutil.which(executable) or executable
+        resolved_name = shutil.which(executable)
+        if resolved_name is None:
+            raise FileNotFoundError("Codex executable was not found.")
+        resolved = Path(resolved_name).resolve(strict=True)
         return cls(
             executable,
-            resolved_executable=Path(resolved_name).resolve(),
+            resolved_executable=resolved,
             version="unverified-legacy-spike",
             capabilities=CodexCliCapabilities(True, False, False, False, False),
+            executable_identity=_executable_identity(resolved),
             process_runner=process_runner,
         )
 
@@ -331,17 +364,31 @@ class CodexCliProcessAdapter:
             )
             command = self._build_command(request, workspace, schema_path, response_path)
             try:
-                completed = self._runner(
-                    command,
-                    cwd=workspace,
-                    env=environment,
-                    input=request.prompt,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    timeout=request.timeout_seconds,
-                    check=False,
-                )
+                if request.lifecycle is not None:
+                    request.lifecycle.before_launch()
+                self._revalidate_executable()
+                if self._runner is None:
+                    completed = self._run_production_process(
+                        command, workspace, environment, request
+                    )
+                else:
+                    if request.lifecycle is not None:
+                        request.lifecycle.process_started(capture_process_identity())
+                    try:
+                        completed = self._runner(
+                            command,
+                            cwd=workspace,
+                            env=environment,
+                            input=request.prompt,
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            timeout=request.timeout_seconds,
+                            check=False,
+                        )
+                    finally:
+                        if request.lifecycle is not None:
+                            request.lifecycle.process_completed()
             except subprocess.TimeoutExpired:
                 timed_out = True
                 launch_error_type = "TimeoutExpired"
@@ -381,6 +428,75 @@ class CodexCliProcessAdapter:
             codex_session_id=_genuine_thread_id(stdout),
         )
 
+    def _revalidate_executable(self) -> None:
+        try:
+            current = _executable_identity(self.resolved_executable)
+        except (OSError, CodexProcessBoundaryError) as exc:
+            raise CodexProcessBoundaryError(
+                "Codex executable identity validation failed before launch."
+            ) from exc
+        if current != self.executable_identity:
+            raise CodexProcessBoundaryError(
+                "Codex executable identity changed after capability discovery."
+            )
+
+    def _run_production_process(
+        self,
+        command: list[str],
+        workspace: Path,
+        environment: Mapping[str, str],
+        request: CodexInvocationRequest,
+    ) -> subprocess.CompletedProcess[str]:
+        process = subprocess.Popen(
+            command,
+            cwd=workspace,
+            env=environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        lifecycle_started = False
+        try:
+            if request.lifecycle is not None:
+                try:
+                    request.lifecycle.process_started(
+                        capture_process_identity(process.pid)
+                    )
+                    lifecycle_started = True
+                except BaseException:
+                    process.kill()
+                    process.wait()
+                    raise
+            try:
+                stdout, stderr = process.communicate(
+                    input=request.prompt,
+                    timeout=request.timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                stdout, stderr = process.communicate()
+                raise subprocess.TimeoutExpired(
+                    command,
+                    request.timeout_seconds,
+                    output=stdout,
+                    stderr=stderr,
+                ) from exc
+            except BaseException:
+                process.kill()
+                process.wait()
+                raise
+            return subprocess.CompletedProcess(
+                command,
+                process.returncode,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        finally:
+            if lifecycle_started and request.lifecycle is not None:
+                request.lifecycle.process_completed()
+
     def _build_command(
         self,
         request: CodexInvocationRequest,
@@ -400,7 +516,7 @@ class CodexCliProcessAdapter:
         ]
         if request.resume_session_id is None:
             command = [
-                self.executable,
+                str(self.resolved_executable),
                 "exec",
                 "--sandbox",
                 "read-only",
@@ -415,7 +531,7 @@ class CodexCliProcessAdapter:
         if not self.capabilities.resume_supported:
             raise CodexProcessBoundaryError("Codex resume boundary is unsupported.")
         return [
-            self.executable,
+            str(self.resolved_executable),
             "--sandbox",
             "read-only",
             "--cd",
@@ -426,6 +542,37 @@ class CodexCliProcessAdapter:
             request.resume_session_id,
             "-",
         ]
+
+
+def _executable_identity(path: Path) -> CodexExecutableIdentity:
+    selected = Path(path)
+    before = selected.lstat()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    file_attributes = getattr(before, "st_file_attributes", 0)
+    if selected.is_symlink() or file_attributes & reparse_flag:
+        raise CodexProcessBoundaryError(
+            "Codex executable cannot be a link or reparse point."
+        )
+    if not stat.S_ISREG(before.st_mode):
+        raise CodexProcessBoundaryError("Codex executable must be a regular file.")
+    digest = hashlib.sha256()
+    with selected.open("rb") as executable_file:
+        for block in iter(lambda: executable_file.read(1024 * 1024), b""):
+            digest.update(block)
+    after = selected.lstat()
+    if (
+        before.st_mode != after.st_mode
+        or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or getattr(before, "st_ino", None) != getattr(after, "st_ino", None)
+    ):
+        raise CodexProcessBoundaryError("Codex executable changed during validation.")
+    return CodexExecutableIdentity(
+        digest.hexdigest(),
+        before.st_size,
+        before.st_dev,
+        before.st_ino,
+    )
 
 
 def _genuine_thread_id(stdout: str) -> str | None:

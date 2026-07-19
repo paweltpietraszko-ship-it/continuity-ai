@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -311,8 +312,10 @@ def test_codex_executable_is_resolved_by_command_name_not_hard_coded_path(
         ),
     )
 
-    assert capture.command[0] == "codex"
-    assert Path(capture.command[0]).parent == Path(".")
+    resolved = shutil.which("codex")
+    assert resolved is not None
+    assert capture.command[0] == str(Path(resolved).resolve(strict=True))
+    assert Path(capture.command[0]).is_absolute()
 
 
 def test_codex_workspace_spike_has_a_separate_cli_command(

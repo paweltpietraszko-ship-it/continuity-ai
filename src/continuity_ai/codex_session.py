@@ -4,16 +4,31 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Iterator, Mapping, Protocol
 
+from continuity_ai.codex_operation import (
+    ActiveCodexOperation,
+    OperationLiveness,
+    OperationRecoveryEvent,
+    OperationStage,
+    OsProcessLivenessVerifier,
+    ProcessIdentity,
+    ProcessIdentityError,
+    ProcessLivenessVerifier,
+    capture_process_identity,
+    operation_liveness,
+)
 from continuity_ai.codex_process import (
     CodexCliProcessAdapter,
+    CodexInvocationLifecycle,
     CodexInvocationRequest,
     CodexProcessBoundaryError,
     CodexProcessResult,
@@ -21,8 +36,9 @@ from continuity_ai.codex_process import (
     workspace_fingerprint,
 )
 
-SESSION_SCHEMA_VERSION = 1
+SESSION_SCHEMA_VERSION = 2
 RECEIPT_SCHEMA_VERSION = 1
+RECOVERY_EVENT_SCHEMA_VERSION = 1
 
 
 class SessionPhase(str, Enum):
@@ -63,6 +79,7 @@ class FailureCategory(str, Enum):
     RESUME_UNSUPPORTED = "resume_unsupported"
     INVALID_STATE = "invalid_session_state"
     INVALID_OUTPUT = "invalid_codex_output"
+    WORKSPACE_BOUNDARY = "workspace_boundary_invalid"
 
 
 class CodexSessionError(RuntimeError):
@@ -109,6 +126,10 @@ class WorkspaceChanged(CodexSessionError):
     failure_category = FailureCategory.WORKSPACE_CHANGED
 
 
+class WorkspaceBoundaryViolation(CodexSessionError):
+    failure_category = FailureCategory.WORKSPACE_BOUNDARY
+
+
 class ResumeUnsupported(CodexSessionError):
     failure_category = FailureCategory.RESUME_UNSUPPORTED
 
@@ -131,6 +152,22 @@ class InvalidCodexOutput(CodexSessionError):
 
 class SessionPersistenceError(CodexSessionError):
     failure_category = FailureCategory.INVALID_STATE
+
+
+class AbandonedOperationRecoveryError(CodexSessionError):
+    failure_category = FailureCategory.INTERRUPTED
+
+
+class ActiveOperationMismatch(AbandonedOperationRecoveryError):
+    pass
+
+
+class ActiveOperationAlive(AbandonedOperationRecoveryError):
+    pass
+
+
+class ActiveOperationLivenessUnknown(AbandonedOperationRecoveryError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -193,6 +230,8 @@ class CodexControllerSession:
     last_explicit_failure: FailureState | None
     sanitized_error_code: str | None
     codex_process_active: bool
+    active_operation: ActiveCodexOperation | None
+    recovery_events: tuple[OperationRecoveryEvent, ...]
 
 
 @dataclass(frozen=True)
@@ -215,6 +254,12 @@ class SessionStore(Protocol):
     def load(self, controller_session_id: str) -> CodexControllerSession: ...
 
     def save(self, session: CodexControllerSession) -> None: ...
+
+    def recover(
+        self,
+        session: CodexControllerSession,
+        expected_operation_id: str,
+    ) -> None: ...
 
 
 class JsonSessionStore:
@@ -251,6 +296,36 @@ class JsonSessionStore:
             sessions[session.controller_session_id] = _session_to_dict(session)
             _validate_session_collection(sessions)
             self._write_document(document)
+
+    def recover(
+        self,
+        session: CodexControllerSession,
+        expected_operation_id: str,
+    ) -> None:
+        """Atomically compare the active operation identity and save recovery."""
+
+        with self._lock:
+            with _recovery_store_lock(self.path):
+                document = self._read_document()
+                sessions = document["sessions"]
+                raw = sessions.get(session.controller_session_id)
+                if raw is None:
+                    raise CodexSessionMismatch(
+                        "Controller session ID does not match retained state."
+                    )
+                current = _session_from_dict(raw)
+                active = current.active_operation
+                if (
+                    not current.codex_process_active
+                    or active is None
+                    or active.operation_id != expected_operation_id
+                ):
+                    raise ActiveOperationMismatch(
+                        "Active operation identity does not match retained state."
+                    )
+                sessions[session.controller_session_id] = _session_to_dict(session)
+                _validate_session_collection(sessions)
+                self._write_document(document)
 
     def _read_document(self) -> dict[str, object]:
         if not self.path.exists():
@@ -290,6 +365,45 @@ class JsonSessionStore:
             raise SessionPersistenceError("Session state could not be persisted atomically.") from exc
 
 
+@contextmanager
+def _recovery_store_lock(store_path: Path) -> Iterator[None]:
+    lock_path = store_path.parent / f".{store_path.name}.recovery.lock"
+    if lock_path.exists() and (lock_path.is_symlink() or not lock_path.is_file()):
+        raise SessionPersistenceError("Session recovery lock is unavailable.")
+    lock_file = None
+    try:
+        lock_file = lock_path.open("a+b")
+        if lock_file.seek(0, 2) == 0:
+            lock_file.write(bytes((0,)))
+            lock_file.flush()
+        lock_file.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            lock_file.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        raise SessionPersistenceError("Session recovery lock is unavailable.") from exc
+    finally:
+        if lock_file is not None:
+            lock_file.close()
+
+
 def _iso(value: datetime) -> str:
     if value.tzinfo is None:
         raise InvalidSessionState("Session timestamps must be timezone-aware.")
@@ -306,6 +420,116 @@ def _datetime(value: object) -> datetime:
     if parsed.tzinfo is None:
         raise CorruptSessionState("Session timestamp is invalid.")
     return parsed.astimezone(timezone.utc)
+
+
+def _process_identity_to_dict(value: ProcessIdentity | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {"pid": value.pid, "creation_token": value.creation_token}
+
+
+def _process_identity_from_dict(value: object) -> ProcessIdentity | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"pid", "creation_token"}:
+        raise CorruptSessionState("Retained process identity is invalid.")
+    pid = value["pid"]
+    token = value["creation_token"]
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        raise CorruptSessionState("Retained process identity is invalid.")
+    if not isinstance(token, str) or not token:
+        raise CorruptSessionState("Retained process identity is invalid.")
+    return ProcessIdentity(pid, token)
+
+
+def _active_operation_to_dict(
+    value: ActiveCodexOperation | None,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        "operation_id": value.operation_id,
+        "controller_session_id": value.controller_session_id,
+        "operation_type": value.operation_type,
+        "stage": value.stage.value,
+        "owner_process": _process_identity_to_dict(value.owner_process),
+        "codex_process": _process_identity_to_dict(value.codex_process),
+        "reserved_at": _iso(value.reserved_at),
+    }
+
+
+def _active_operation_from_dict(value: object) -> ActiveCodexOperation | None:
+    fields = {
+        "operation_id",
+        "controller_session_id",
+        "operation_type",
+        "stage",
+        "owner_process",
+        "codex_process",
+        "reserved_at",
+    }
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != fields:
+        raise CorruptSessionState("Retained active operation is invalid.")
+    owner = _process_identity_from_dict(value["owner_process"])
+    if owner is None:
+        raise CorruptSessionState("Retained active operation owner is invalid.")
+    try:
+        operation_type = CodexOperation(_string(value["operation_type"])).value
+        return ActiveCodexOperation(
+            operation_id=_uuid_string(value["operation_id"]),
+            controller_session_id=_uuid_string(value["controller_session_id"]),
+            operation_type=operation_type,
+            stage=OperationStage(value["stage"]),
+            owner_process=owner,
+            codex_process=_process_identity_from_dict(value["codex_process"]),
+            reserved_at=_datetime(value["reserved_at"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise CorruptSessionState("Retained active operation is invalid.") from exc
+
+
+def _recovery_event_to_dict(value: OperationRecoveryEvent) -> dict[str, object]:
+    return {
+        "recovery_event_schema_version": RECOVERY_EVENT_SCHEMA_VERSION,
+        "event_id": value.event_id,
+        "controller_session_id": value.controller_session_id,
+        "operation_id": value.operation_id,
+        "recovered_at": _iso(value.recovered_at),
+        "observed_liveness": value.observed_liveness.value,
+        "abandoned_stage": value.abandoned_stage.value,
+        "sanitized_error_code": value.sanitized_error_code,
+    }
+
+
+def _recovery_event_from_dict(value: object) -> OperationRecoveryEvent:
+    fields = {
+        "recovery_event_schema_version",
+        "event_id",
+        "controller_session_id",
+        "operation_id",
+        "recovered_at",
+        "observed_liveness",
+        "abandoned_stage",
+        "sanitized_error_code",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise CorruptSessionState("Retained recovery event is invalid.")
+    if value["recovery_event_schema_version"] != RECOVERY_EVENT_SCHEMA_VERSION:
+        raise IncompatibleSessionState("Recovery event schema version is incompatible.")
+    try:
+        return OperationRecoveryEvent(
+            event_id=_uuid_string(value["event_id"]),
+            controller_session_id=_uuid_string(value["controller_session_id"]),
+            operation_id=_uuid_string(value["operation_id"]),
+            recovered_at=_datetime(value["recovered_at"]),
+            observed_liveness=OperationLiveness(value["observed_liveness"]),
+            abandoned_stage=OperationStage(value["abandoned_stage"]),
+            sanitized_error_code=_string(value["sanitized_error_code"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise CorruptSessionState("Retained recovery event is invalid.") from exc
 
 
 def _failure_to_dict(value: FailureState | None) -> dict[str, object] | None:
@@ -410,7 +634,7 @@ _SESSION_FIELDS = {
     "approved_workspace_fingerprint", "phase", "availability", "created_at",
     "updated_at", "resume_supported", "last_successful_invocation_receipt",
     "last_invocation_receipt", "last_explicit_failure", "sanitized_error_code",
-    "codex_process_active",
+    "codex_process_active", "active_operation", "recovery_events",
 }
 
 
@@ -437,6 +661,10 @@ def _session_to_dict(value: CodexControllerSession) -> dict[str, object]:
         "last_explicit_failure": _failure_to_dict(value.last_explicit_failure),
         "sanitized_error_code": value.sanitized_error_code,
         "codex_process_active": value.codex_process_active,
+        "active_operation": _active_operation_to_dict(value.active_operation),
+        "recovery_events": [
+            _recovery_event_to_dict(event) for event in value.recovery_events
+        ],
     }
 
 
@@ -470,6 +698,15 @@ def _session_from_dict(value: object) -> CodexControllerSession:
             last_explicit_failure=_failure_from_dict(value["last_explicit_failure"]),
             sanitized_error_code=_optional_string(value["sanitized_error_code"]),
             codex_process_active=_boolean(value["codex_process_active"]),
+            active_operation=_active_operation_from_dict(value["active_operation"]),
+            recovery_events=tuple(
+                _recovery_event_from_dict(event)
+                for event in (
+                    value["recovery_events"]
+                    if isinstance(value["recovery_events"], list)
+                    else (_raise_corrupt_recovery_events())
+                )
+            ),
         )
     except (ValueError, TypeError) as exc:
         raise CorruptSessionState("Controller session contains invalid values.") from exc
@@ -477,6 +714,37 @@ def _session_from_dict(value: object) -> CodexControllerSession:
         session.approved_workspace_fingerprint is None
     ):
         raise CorruptSessionState("Approved workspace binding is incomplete.")
+    if session.codex_process_active != (session.active_operation is not None):
+        raise CorruptSessionState("Active operation marker is inconsistent.")
+    if (
+        session.active_operation is not None
+        and session.active_operation.controller_session_id
+        != session.controller_session_id
+    ):
+        raise CorruptSessionState("Active operation belongs to another session.")
+    if session.active_operation is not None:
+        active = session.active_operation
+        process_required = active.stage in {
+            OperationStage.RUNNING,
+            OperationStage.COMPLETED,
+        }
+        if process_required != (active.codex_process is not None):
+            raise CorruptSessionState("Active operation process identity is inconsistent.")
+    event_ids: set[str] = set()
+    recovered_operation_ids: set[str] = set()
+    for event in session.recovery_events:
+        if event.controller_session_id != session.controller_session_id:
+            raise CorruptSessionState("Recovery event belongs to another session.")
+        if event.event_id in event_ids:
+            raise CorruptSessionState("Recovery event identity is duplicated.")
+        if event.observed_liveness is not OperationLiveness.DEAD:
+            raise CorruptSessionState("Recovery event does not prove operation death.")
+        if event.operation_id in recovered_operation_ids:
+            raise CorruptSessionState("Operation was recovered more than once.")
+        if event.sanitized_error_code != "abandoned_operation_recovered":
+            raise CorruptSessionState("Recovery event error code is invalid.")
+        event_ids.add(event.event_id)
+        recovered_operation_ids.add(event.operation_id)
     for receipt in (
         session.last_successful_invocation_receipt,
         session.last_invocation_receipt,
@@ -489,6 +757,10 @@ def _session_from_dict(value: object) -> CodexControllerSession:
     ):
         raise CorruptSessionState("Last successful receipt is not successful.")
     return session
+
+
+def _raise_corrupt_recovery_events() -> tuple[OperationRecoveryEvent, ...]:
+    raise CorruptSessionState("Retained recovery event collection is invalid.")
 
 
 def _validate_session_collection(value: Mapping[object, object]) -> None:
@@ -563,11 +835,13 @@ class CodexSessionController:
         *,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], uuid.UUID] | None = None,
+        liveness_verifier: ProcessLivenessVerifier | None = None,
     ) -> None:
         self.store = store
         self.process_adapter = process_adapter
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or uuid.uuid4
+        self._liveness_verifier = liveness_verifier or OsProcessLivenessVerifier()
         self._active_sessions: set[str] = set()
         self._active_lock = threading.Lock()
 
@@ -579,6 +853,7 @@ class CodexSessionController:
         executable: str = "codex",
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], uuid.UUID] | None = None,
+        liveness_verifier: ProcessLivenessVerifier | None = None,
     ) -> "CodexSessionController":
         try:
             adapter = CodexCliProcessAdapter.discover(executable)
@@ -586,11 +861,17 @@ class CodexSessionController:
             raise CodexNotInstalled("Codex executable is not installed.") from exc
         except CodexProcessBoundaryError as exc:
             raise CodexUnavailable("Codex capability discovery failed.") from exc
-        return cls(store, adapter, clock=clock, id_factory=id_factory)
+        return cls(
+            store,
+            adapter,
+            clock=clock,
+            id_factory=id_factory,
+            liveness_verifier=liveness_verifier,
+        )
 
     def create_session(self, workspace_root: Path) -> CodexControllerSession:
         root = _resolved_workspace(workspace_root)
-        fingerprint = workspace_fingerprint(root)
+        fingerprint = _session_workspace_fingerprint(root)
         now = self._now()
         session = CodexControllerSession(
             schema_version=SESSION_SCHEMA_VERSION,
@@ -612,6 +893,8 @@ class CodexSessionController:
             last_explicit_failure=None,
             sanitized_error_code=None,
             codex_process_active=False,
+            active_operation=None,
+            recovery_events=(),
         )
         self.store.create(session)
         return session
@@ -658,7 +941,7 @@ class CodexSessionController:
         original = Path(session.workspace_root)
         if approved == original or original.is_relative_to(approved):
             raise WorkspaceMismatch("Approved workspace cannot widen or equal the original workspace.")
-        actual = workspace_fingerprint(approved)
+        actual = _session_workspace_fingerprint(approved)
         if actual != approved_workspace_fingerprint:
             raise WorkspaceChanged("Approved workspace fingerprint does not match its contents.")
         updated = replace(
@@ -782,6 +1065,65 @@ class CodexSessionController:
             FailureCategory.UNAVAILABLE,
         )
 
+    def recover_abandoned_operation(
+        self,
+        controller_session_id: str,
+        operation_id: str,
+    ) -> CodexControllerSession:
+        """Release exactly one OS-proven-dead operation without semantic success."""
+
+        self._acquire(controller_session_id)
+        try:
+            session = self.store.load(controller_session_id)
+            try:
+                normalized_operation_id = str(uuid.UUID(operation_id))
+            except (ValueError, AttributeError) as exc:
+                raise ActiveOperationMismatch(
+                    "Active operation identity does not match retained state."
+                ) from exc
+            active = session.active_operation
+            if (
+                not session.codex_process_active
+                or active is None
+                or active.operation_id != normalized_operation_id
+            ):
+                raise ActiveOperationMismatch(
+                    "Active operation identity does not match retained state."
+                )
+            observed = operation_liveness(active, self._liveness_verifier)
+            if observed is OperationLiveness.ALIVE:
+                raise ActiveOperationAlive(
+                    "Active operation is still alive and cannot be recovered."
+                )
+            if observed is OperationLiveness.UNKNOWN:
+                raise ActiveOperationLivenessUnknown(
+                    "Active operation liveness is unknown and cannot be recovered."
+                )
+            now = self._now()
+            event = OperationRecoveryEvent(
+                event_id=str(self._id_factory()),
+                controller_session_id=session.controller_session_id,
+                operation_id=active.operation_id,
+                recovered_at=now,
+                observed_liveness=OperationLiveness.DEAD,
+                abandoned_stage=active.stage,
+                sanitized_error_code="abandoned_operation_recovered",
+            )
+            recovered = replace(
+                session,
+                availability=CodexAvailability.INTERRUPTED,
+                updated_at=now,
+                last_explicit_failure=FailureState(FailureCategory.INTERRUPTED, now),
+                sanitized_error_code="abandoned_operation_recovered",
+                codex_process_active=False,
+                active_operation=None,
+                recovery_events=(*session.recovery_events, event),
+            )
+            self.store.recover(recovered, active.operation_id)
+            return recovered
+        finally:
+            self._release(controller_session_id)
+
     def _transition(
         self,
         controller_session_id: str,
@@ -845,14 +1187,65 @@ class CodexSessionController:
                 resume_attempted=resume_session_id is not None,
             )
             _validate_operation_request(request)
+            try:
+                owner_process = capture_process_identity()
+            except ProcessIdentityError as exc:
+                raise CodexUnavailable(
+                    "Codex operation liveness boundary is unavailable."
+                ) from exc
+            reserved_at = self._now()
+            active_operation = ActiveCodexOperation(
+                operation_id=str(self._id_factory()),
+                controller_session_id=session.controller_session_id,
+                operation_type=operation.value,
+                stage=OperationStage.RESERVED,
+                owner_process=owner_process,
+                codex_process=None,
+                reserved_at=reserved_at,
+            )
             active = replace(
                 session,
                 codex_process_active=True,
-                updated_at=self._now(),
+                active_operation=active_operation,
+                updated_at=reserved_at,
             )
             # The active marker is persisted before launch. If this save fails,
             # no subprocess is created and no later phase can be published.
             self.store.save(active)
+            operation_state = active
+
+            def advance_operation(
+                stage: OperationStage,
+                process_identity: ProcessIdentity | None = None,
+            ) -> None:
+                nonlocal operation_state
+                retained = operation_state.active_operation
+                if retained is None:
+                    raise InvalidSessionState("Active operation identity is absent.")
+                updated_operation = replace(
+                    retained,
+                    stage=stage,
+                    codex_process=(
+                        retained.codex_process
+                        if process_identity is None
+                        else process_identity
+                    ),
+                )
+                updated = replace(
+                    operation_state,
+                    active_operation=updated_operation,
+                    updated_at=self._now(),
+                )
+                self.store.save(updated)
+                operation_state = updated
+
+            lifecycle = CodexInvocationLifecycle(
+                before_launch=lambda: advance_operation(OperationStage.LAUNCHING),
+                process_started=lambda identity: advance_operation(
+                    OperationStage.RUNNING, identity
+                ),
+                process_completed=lambda: advance_operation(OperationStage.COMPLETED),
+            )
             started = self._now()
             try:
                 process = self.process_adapter.invoke(
@@ -865,11 +1258,12 @@ class CodexSessionController:
                         resume_session_id=resume_session_id,
                         allow_api_key_environment=False,
                         expected_workspace_fingerprint=expected_fingerprint,
+                        lifecycle=lifecycle,
                     )
                 )
             except CodexWorkspaceChangedBeforeLaunch as exc:
                 receipt = self._boundary_failure_receipt(
-                    active,
+                    operation_state,
                     operation,
                     root,
                     expected_fingerprint,
@@ -877,15 +1271,15 @@ class CodexSessionController:
                     FailureCategory.WORKSPACE_CHANGED,
                     resume_session_id is not None,
                 )
-                failed = self._failed_state(active, receipt)
+                failed = self._failed_state(operation_state, receipt)
                 self.store.save(failed)
                 raise WorkspaceChanged(
                     "Workspace changed before Codex process launch.", receipt=receipt
                 ) from exc
-            except CodexProcessBoundaryError as exc:
+            except (CodexProcessBoundaryError, ProcessIdentityError) as exc:
                 process = None
                 receipt = self._boundary_failure_receipt(
-                    active,
+                    operation_state,
                     operation,
                     root,
                     expected_fingerprint,
@@ -893,7 +1287,7 @@ class CodexSessionController:
                     FailureCategory.UNAVAILABLE,
                     resume_session_id is not None,
                 )
-                failed = self._failed_state(active, receipt)
+                failed = self._failed_state(operation_state, receipt)
                 self.store.save(failed)
                 raise CodexUnavailable(
                     "Codex process boundary is unavailable.", receipt=receipt
@@ -957,7 +1351,7 @@ class CodexSessionController:
                 ),
             )
             if category is not None:
-                failed = self._failed_state(active, receipt)
+                failed = self._failed_state(operation_state, receipt)
                 self.store.save(failed)
                 raise _exception_for_failure(category, receipt)
 
@@ -969,14 +1363,14 @@ class CodexSessionController:
                         structured_output_valid=False,
                         failure_category=FailureCategory.SESSION_MISMATCH,
                     )
-                    self.store.save(self._failed_state(active, failed_receipt))
+                    self.store.save(self._failed_state(operation_state, failed_receipt))
                     raise CodexSessionMismatch(
                         "Codex returned an identity assigned to another session.",
                         receipt=failed_receipt,
                     )
                 retained_codex_id = returned_id
             succeeded = replace(
-                active,
+                operation_state,
                 codex_session_id=retained_codex_id,
                 phase=success_phase,
                 availability=CodexAvailability.AVAILABLE,
@@ -986,6 +1380,7 @@ class CodexSessionController:
                 last_explicit_failure=None,
                 sanitized_error_code=None,
                 codex_process_active=False,
+                active_operation=None,
             )
             self.store.save(succeeded)
             assert structured is not None
@@ -1029,7 +1424,7 @@ class CodexSessionController:
                 "Workspace path does not match the controller session.",
                 receipt=receipt,
             )
-        actual = workspace_fingerprint(root)
+        actual = _session_workspace_fingerprint(root)
         if actual != expected_fingerprint:
             receipt = self._record_preflight_failure(
                 session,
@@ -1053,7 +1448,7 @@ class CodexSessionController:
         *,
         resume_attempted: bool,
     ) -> InvocationReceipt:
-        fingerprint = workspace_fingerprint(root)
+        fingerprint = _session_workspace_fingerprint(root)
         started = self._now()
         receipt = self._boundary_failure_receipt(
             session,
@@ -1121,6 +1516,7 @@ class CodexSessionController:
             last_explicit_failure=FailureState(category, receipt.finished_at),
             sanitized_error_code=category.value,
             codex_process_active=False,
+            active_operation=None,
         )
 
     def _acquire(self, controller_session_id: str) -> None:
@@ -1156,6 +1552,15 @@ def _resolved_workspace(value: Path) -> Path:
     if not resolved.is_dir():
         raise WorkspaceMismatch("Workspace root must be a directory.")
     return resolved
+
+
+def _session_workspace_fingerprint(root: Path) -> str:
+    try:
+        return workspace_fingerprint(root)
+    except CodexProcessBoundaryError as exc:
+        raise WorkspaceBoundaryViolation(
+            "Workspace boundary validation failed."
+        ) from exc
 
 
 def _session_bound_root(session: CodexControllerSession) -> Path:

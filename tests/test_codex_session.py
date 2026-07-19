@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 import uuid
 from dataclasses import dataclass
@@ -102,7 +103,7 @@ def _workspace(tmp_path: Path, name: str = "workspace", content: str = "alpha") 
 def _adapter(runner: FakeRunner, *, resume: bool = True) -> CodexCliProcessAdapter:
     return CodexCliProcessAdapter(
         "codex",
-        resolved_executable=Path("C:/Program Files/OpenAI/Codex/codex.exe"),
+        resolved_executable=Path(sys.executable),
         version="codex-cli test",
         capabilities=CodexCliCapabilities(
             True, resume, resume, resume, resume, resume_verified=resume
@@ -507,6 +508,15 @@ class FailingSaveStore:
         if self.fail:
             raise SessionPersistenceError("injected persistence failure")
         self.delegate.save(session)
+
+    def recover(
+        self,
+        session: CodexControllerSession,
+        expected_operation_id: str,
+    ) -> None:
+        if self.fail:
+            raise SessionPersistenceError("injected persistence failure")
+        self.delegate.recover(session, expected_operation_id)
 
 
 def test_persistence_failure_cannot_publish_later_lifecycle_phase(

@@ -25,6 +25,9 @@ def test_real_local_codex_session_smoke_and_supported_resume(tmp_path: Path) -> 
     store = JsonSessionStore(tmp_path / "controller-state.json")
     controller = CodexSessionController.with_local_codex(store)
     created = controller.create_session(workspace)
+    assert created.codex_executable == str(
+        controller.process_adapter.resolved_executable
+    )
     before = workspace_fingerprint(workspace)
     schema = {
         "type": "object",
@@ -50,6 +53,7 @@ def test_real_local_codex_session_smoke_and_supported_resume(tmp_path: Path) -> 
 
     assert first.structured_output == {"answer": "synthetic-local-codex-smoke"}
     assert first.receipt.succeeded
+    assert first.receipt.resolved_executable == created.codex_executable
     assert first.receipt.workspace_root == str(workspace)
     assert first.receipt.sandbox_mode == "read-only"
     assert first.receipt.input_unchanged
