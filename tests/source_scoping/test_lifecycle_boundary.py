@@ -166,6 +166,9 @@ def _assert_failed_confirmation_is_atomic(
     saved_before,
     proposal_must_remain=True,
 ):
+    encrypted_before = vault.path.read_bytes()
+    records_before = bridge.records
+    spans_before = bridge.spans
     response = bridge.handle(
         {
             'command': 'confirm_analysis_revision',
@@ -177,8 +180,19 @@ def _assert_failed_confirmation_is_atomic(
         bridge.analysis is analysis_before,
         vault.payload['saved_analyses'] == saved_before,
         proposal_id in vault.pending_revisions,
+        vault.path.read_bytes() == encrypted_before,
+        bridge.records is records_before,
+        bridge.spans is spans_before,
     )
-    expected = (False, True, True, proposal_must_remain)
+    expected = (
+        False,
+        True,
+        True,
+        proposal_must_remain,
+        True,
+        True,
+        True,
+    )
     assert actual == expected
 
 
